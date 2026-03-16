@@ -1,0 +1,61 @@
+name: Deploy to GCP VM
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    name: SSH deploy → e2-micro
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (for changed-files detection)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect what changed
+        id: changes
+        run: |
+          git diff --name-only HEAD~1 HEAD > changed.txt
+          cat changed.txt
+          echo "deps_changed=$(grep -q 'server/package' changed.txt && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "service_changed=$(grep -q 'config/claude-mobile.service' changed.txt && echo true || echo false)" >> $GITHUB_OUTPUT
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DEPS_CHANGED,SERVICE_CHANGED
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            echo "── Pulling latest code ──"
+            git -C ~/claude-mobile pull --ff-only
+
+            if [ "$DEPS_CHANGED" = "true" ]; then
+              echo "── package.json changed → npm install ──"
+              cd ~/claude-mobile/server && npm install --omit=dev
+            fi
+
+            if [ "$SERVICE_CHANGED" = "true" ]; then
+              echo "── Updating systemd unit ──"
+              SERVICE="claude-mobile@$(whoami).service"
+              sudo cp ~/claude-mobile/config/claude-mobile.service "/etc/systemd/system/$SERVICE"
+              sudo systemctl daemon-reload
+            fi
+
+            echo "── Restarting service ──"
+            sudo systemctl restart "claude-mobile@$(whoami)"
+
+            sleep 2
+            sudo systemctl is-active --quiet "claude-mobile@$(whoami)" \
+              && echo "✓ Service is running" \
+              || { echo "✗ Service failed to start"; sudo journalctl -u "claude-mobile@$(whoami)" -n 30 --no-pager; exit 1; }
+        env:
+          DEPS_CHANGED: ${{ steps.changes.outputs.deps_changed }}
+          SERVICE_CHANGED: ${{ steps.changes.outputs.service_changed }}
