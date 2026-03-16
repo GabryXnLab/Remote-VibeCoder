@@ -127,34 +127,14 @@ success "Repos directory ready: $REPOS_DIR"
 # ─── Step 7: Interactive prompts ─────────────────────────────────────────────
 header "Step 7 / 10 — Configuration"
 
-# Password — read with asterisk echo for visibility
-read_secret() {
-  local prompt="$1"
-  local result=""
-  local char
-  printf "%s" "$prompt"
-  while IFS= read -r -s -n1 char; do
-    if [[ $char == $'\0' || $char == $'\n' || $char == $'\r' ]]; then
-      break
-    elif [[ $char == $'\177' || $char == $'\b' ]]; then
-      if [[ ${#result} -gt 0 ]]; then
-        result="${result%?}"
-        printf '\b \b'
-      fi
-    else
-      result+="$char"
-      printf '*'
-    fi
-  done
-  echo ""
-  echo "$result"
-}
-
+# Password
 echo -e "${YELLOW}Set your access password (this is what you'll type in the browser):${NC}"
-echo -e "${CYAN}  (each character will appear as * for security)${NC}"
+echo -e "${CYAN}  (you can see what you type — this is a private SSH session)${NC}"
 while true; do
-  PASSWORD=$(read_secret "  Password: ")
-  PASSWORD2=$(read_secret "  Confirm:  ")
+  read -rp "  Password: " PASSWORD
+  echo ""
+  read -rp "  Confirm:  " PASSWORD2
+  echo ""
   if [ "$PASSWORD" = "$PASSWORD2" ]; then
     [ -n "$PASSWORD" ] && break
     warn "Password cannot be empty"
