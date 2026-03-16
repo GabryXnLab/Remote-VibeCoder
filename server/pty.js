@@ -21,7 +21,7 @@ function sanitizeSessionName(name) {
 function handlePtyUpgrade(ws, req) {
   // Extract repo from URL: /ws/pty/:repo
   const urlParts = req.url.split('/');
-  const rawRepo = urlParts[urlParts.length - 1] || 'default';
+  const rawRepo = decodeURIComponent(urlParts[urlParts.length - 1] || 'default');
 
   let sessionName;
   try {
@@ -39,6 +39,12 @@ function handlePtyUpgrade(ws, req) {
 
   let ptyProcess;
   try {
+    // Build env: inherit process env but remove TMUX so nested attach works
+    // even if the server was started from inside a tmux session.
+    const ptyEnv = { ...process.env };
+    delete ptyEnv.TMUX;
+    delete ptyEnv.TMUX_PANE;
+
     ptyProcess = pty.spawn('tmux', [
       'new-session', '-A',  // -A: attach if exists, create if not
       '-s', sessionName,
@@ -50,7 +56,7 @@ function handlePtyUpgrade(ws, req) {
       rows: 50,
       cwd: reposDir,
       env: {
-        ...process.env,
+        ...ptyEnv,
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         LANG: 'en_US.UTF-8',

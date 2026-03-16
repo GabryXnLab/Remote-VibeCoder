@@ -17,11 +17,19 @@
   init();
 })();
 
-async function init() {
+function init() {
   document.getElementById('refresh-btn').addEventListener('click', loadAll);
   document.getElementById('logout-btn').addEventListener('click', logout);
-  await loadAll();
+
+  // Bind action listeners ONCE on static container elements (event delegation).
+  // Binding inside render functions caused duplicate listeners on every loadAll().
+  document.getElementById('repos-list').addEventListener('click', handleRepoClick);
+  document.getElementById('sessions-list').addEventListener('click', handleSessionClick);
+
+  loadAll();
 }
+
+// ─── Data load ───────────────────────────────────────────────────────────────
 
 async function loadAll() {
   showLoading(true);
@@ -37,10 +45,9 @@ async function loadAll() {
     const { repos } = await reposRes.json();
     const { sessions } = sessionsRes.ok ? await sessionsRes.json() : { sessions: [] };
 
-    // Build active session names set
     const activeSessions = new Set(sessions.map(s => s.name));
 
-    renderSessions(sessions, repos);
+    renderSessions(sessions);
     renderRepos(repos, activeSessions);
   } catch (err) {
     showError(err.message);
@@ -49,7 +56,9 @@ async function loadAll() {
   }
 }
 
-function renderSessions(sessions, repos) {
+// ─── Render (HTML only — no event listeners here) ────────────────────────────
+
+function renderSessions(sessions) {
   const section = document.getElementById('sessions-section');
   const list = document.getElementById('sessions-list');
   list.innerHTML = '';
@@ -81,26 +90,6 @@ function renderSessions(sessions, repos) {
     `;
     list.appendChild(card);
   }
-
-  // Bind session actions
-  list.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action]');
-    if (!btn) return;
-    const { action, repo } = btn.dataset;
-    if (action === 'attach') {
-      openTerminal(repo);
-    } else if (action === 'kill') {
-      if (!confirm(`Kill session claude-${repo}? Claude Code will stop.`)) return;
-      btn.disabled = true;
-      try {
-        await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'DELETE' });
-        await loadAll();
-      } catch (err) {
-        alert('Error: ' + err.message);
-        btn.disabled = false;
-      }
-    }
-  });
 }
 
 function renderRepos(repos, activeSessions) {
@@ -149,66 +138,91 @@ function renderRepos(repos, activeSessions) {
     `;
     list.appendChild(card);
   }
-
-  // Bind actions
-  list.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-action]');
-    if (!btn) return;
-    const { action, repo } = btn.dataset;
-    const originalText = btn.textContent;
-    btn.disabled = true;
-
-    try {
-      if (action === 'clone') {
-        btn.textContent = 'Cloning…';
-        const res = await fetch('/api/repos/clone', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: repo }),
-        });
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.error || `Clone failed (${res.status})`);
-        }
-        await loadAll();
-
-      } else if (action === 'pull') {
-        btn.textContent = '…';
-        const res = await fetch('/api/repos/pull', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: repo }),
-        });
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.error || `Pull failed (${res.status})`);
-        }
-        btn.textContent = '✓';
-        setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
-        return;
-
-      } else if (action === 'open') {
-        btn.textContent = 'Starting…';
-        // Create session (starts claude), then open terminal
-        const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'POST' });
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.error || `Failed to start session (${res.status})`);
-        }
-        openTerminal(repo);
-        return;
-
-      } else if (action === 'attach') {
-        openTerminal(repo);
-        return;
-      }
-    } catch (err) {
-      alert('Error: ' + err.message);
-      btn.disabled = false;
-      btn.textContent = originalText;
-    }
-  });
 }
+
+// ─── Action handlers (bound once in init) ────────────────────────────────────
+
+async function handleRepoClick(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn || btn.disabled) return;
+
+  const { action, repo } = btn.dataset;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+
+  try {
+    if (action === 'clone') {
+      btn.textContent = 'Cloning…';
+      const res = await fetch('/api/repos/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: repo }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Clone failed (${res.status})`);
+      }
+      await loadAll();
+
+    } else if (action === 'pull') {
+      btn.textContent = '…';
+      const res = await fetch('/api/repos/pull', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: repo }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Pull failed (${res.status})`);
+      }
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+      return;
+
+    } else if (action === 'open') {
+      btn.textContent = 'Starting…';
+      const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'POST' });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Failed to start session (${res.status})`);
+      }
+      openTerminal(repo);
+      return;
+
+    } else if (action === 'attach') {
+      openTerminal(repo);
+      return;
+    }
+  } catch (err) {
+    showError(err.message);
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+async function handleSessionClick(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn || btn.disabled) return;
+
+  const { action, repo } = btn.dataset;
+
+  if (action === 'attach') {
+    openTerminal(repo);
+  } else if (action === 'kill') {
+    if (!confirm(`Kill session claude-${repo}? Claude Code will stop.`)) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to kill session');
+      await loadAll();
+    } catch (err) {
+      showError(err.message);
+      btn.disabled = false;
+    }
+  }
+}
+
+// ─── Navigation ──────────────────────────────────────────────────────────────
 
 function openTerminal(repo) {
   window.location.href = `terminal.html?repo=${encodeURIComponent(repo)}`;
@@ -219,13 +233,16 @@ async function logout() {
   window.location.replace('index.html');
 }
 
+// ─── UI helpers ──────────────────────────────────────────────────────────────
+
 function showLoading(show) {
   document.getElementById('loading').classList.toggle('hidden', !show);
 }
 
 function hideError() {
-  document.getElementById('error-container').classList.add('hidden');
-  document.getElementById('error-container').innerHTML = '';
+  const el = document.getElementById('error-container');
+  el.classList.add('hidden');
+  el.innerHTML = '';
 }
 
 function showError(msg) {
