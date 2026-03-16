@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a1a1a">
+  <title>Remote VibeCoder — Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <!-- xterm.js from CDN -->
+  <link rel="stylesheet" href="https://unpkg.com/@xterm/xterm@5.3.0/css/xterm.css">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Ensure terminal fills available space correctly */
+    .xterm-screen { height: 100% !important; }
+  </style>
+</head>
+<body>
+  <div class="terminal-page">
+    <!-- Header -->
+    <header class="terminal-header">
+      <a href="projects.html" class="btn btn-small btn-secondary" style="padding:4px 10px">←</a>
+      <span class="terminal-title" id="terminal-title">Loading…</span>
+      <div class="terminal-status">
+        <div class="status-dot connecting" id="status-dot"></div>
+        <span id="status-text">Connecting</span>
+      </div>
+    </header>
+
+    <!-- Terminal area — flex:1 fills remaining space -->
+    <div class="terminal-wrapper">
+      <div id="terminal"></div>
+
+      <!-- Reconnect overlay -->
+      <div class="reconnect-overlay" id="reconnect-overlay">
+        <div class="spinner"></div>
+        <p class="reconnect-message" id="reconnect-message">Reconnecting…</p>
+        <button class="btn btn-primary btn-small" id="reconnect-btn">Reconnect now</button>
+      </div>
+    </div>
+
+    <!-- Quick action toolbar — flex-shrink:0, sits above keyboard on mobile -->
+    <div class="terminal-toolbar" id="toolbar">
+      <button class="toolbar-btn" id="btn-ctrlc" title="Ctrl+C">Ctrl+C</button>
+      <button class="toolbar-btn" id="btn-clear" title="Clear screen">/clear</button>
+      <button class="toolbar-btn" id="btn-tab" title="Tab">Tab</button>
+      <button class="toolbar-btn" id="btn-esc" title="Escape">Esc</button>
+      <button class="toolbar-btn" id="btn-up" title="Arrow Up">↑</button>
+      <button class="toolbar-btn" id="btn-down" title="Arrow Down">↓</button>
+      <button class="toolbar-btn" id="btn-scroll-bottom" title="Scroll to bottom">⬇ End</button>
+      <button class="toolbar-btn" id="btn-kill-session" title="Kill tmux session" style="margin-left:auto;color:var(--danger);border-color:var(--danger)">Kill Session</button>
+    </div>
+  </div>
+
+  <!-- xterm.js + addons from CDN -->
+  <script src="https://unpkg.com/@xterm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://unpkg.com/@xterm/addon-fit@0.8.0/lib/addon-fit.js"></script>
+  <script src="https://unpkg.com/@xterm/addon-web-links@0.9.0/lib/addon-web-links.js"></script>
+  <script src="js/terminal.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "claude-mobile-server",
+  "version": "1.0.0",
+  "description": "Remote VibeCoder - Claude Code via smartphone browser",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "NODE_ENV=development node index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.1.1",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.18.3",
+    "express-session": "^1.17.3",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0",
+    "node-pty": "^1.0.0",
+    "simple-git": "^3.22.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
+  }
+}

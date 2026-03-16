@@ -1,0 +1,12 @@
+# Cloudflare Tunnel configuration
+# setup.sh substitutes TUNNEL_ID, USERNAME, and DOMAIN at install time
+tunnel: TUNNEL_ID
+credentials-file: /home/USERNAME/.cloudflared/TUNNEL_ID.json
+
+ingress:
+  - hostname: DOMAIN
+    service: http://127.0.0.1:3000
+    originRequest:
+      connectTimeout: 30s
+      # NOTE: Do NOT add disableChunkedEncoding — it breaks WebSocket
+  - service: http_status:404
