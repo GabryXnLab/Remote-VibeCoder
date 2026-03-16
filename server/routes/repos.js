@@ -45,12 +45,12 @@ router.get('/', async (req, res) => {
     const octokit = getOctokit();
     const username = getGithubUser();
 
-    // Fetch all repos (paginated, up to 100)
-    const { data } = await octokit.repos.listForUser({
-      username,
+    // Fetch all repos including private (authenticated user endpoint)
+    const { data } = await octokit.repos.listForAuthenticatedUser({
       per_page: 100,
       sort: 'updated',
       type: 'all',
+      affiliation: 'owner',
     });
 
     ensureReposDir();
