@@ -149,6 +149,42 @@ router.post('/pull', async (req, res) => {
   }
 });
 
+// GET /api/repos/:name/tree?path= — list directory contents of a cloned repo
+router.get('/:name/tree', (req, res) => {
+  const { name } = req.params;
+  if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid repo name' });
+  }
+
+  const repoRoot = path.join(REPOS_DIR, name);
+  if (!fs.existsSync(repoRoot)) {
+    return res.status(404).json({ error: 'Repo not cloned locally' });
+  }
+
+  const rawSub = (req.query.path || '').replace(/^\/+/, '');
+  const targetPath = path.join(repoRoot, rawSub);
+
+  try {
+    const resolved = fs.realpathSync(targetPath);
+    const resolvedRoot = fs.realpathSync(repoRoot);
+    if (!resolved.startsWith(resolvedRoot)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    const entries = fs.readdirSync(resolved, { withFileTypes: true })
+      .filter(e => e.name !== '.git')
+      .map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+    res.json({ entries, path: rawSub });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/repos/:name — remove local clone
 router.delete('/:name', (req, res) => {
   const { name } = req.params;
