@@ -127,14 +127,19 @@ success "Repos directory ready: $REPOS_DIR"
 # ─── Step 7: Interactive prompts ─────────────────────────────────────────────
 header "Step 7 / 10 — Configuration"
 
+# All interactive reads go through /dev/tty so they always reach the keyboard,
+# regardless of how the script was invoked (pipe, redirect, etc.)
+ask() {
+  local prompt="$1" varname="$2"
+  printf "%s" "$prompt" >/dev/tty
+  read -r "$varname" </dev/tty
+}
+
 # Password
 echo -e "${YELLOW}Set your access password (this is what you'll type in the browser):${NC}"
-echo -e "${CYAN}  (you can see what you type — this is a private SSH session)${NC}"
 while true; do
-  read -rp "  Password: " PASSWORD
-  echo ""
-  read -rp "  Confirm:  " PASSWORD2
-  echo ""
+  ask "  Password: " PASSWORD
+  ask "  Confirm:  " PASSWORD2
   if [ "$PASSWORD" = "$PASSWORD2" ]; then
     [ -n "$PASSWORD" ] && break
     warn "Password cannot be empty"
@@ -147,20 +152,19 @@ done
 echo ""
 echo -e "${YELLOW}Enter your GitHub Personal Access Token (PAT):${NC}"
 echo -e "${CYAN}  Create one at: github.com/settings/tokens (scopes: repo, read:user)${NC}"
-read -rsp "  GitHub PAT: " GITHUB_PAT
-echo ""
+ask "  GitHub PAT: " GITHUB_PAT
 [ -z "$GITHUB_PAT" ] && { error "GitHub PAT cannot be empty"; exit 1; }
 
 # GitHub username
 echo ""
 echo -e "${YELLOW}Your GitHub username:${NC}"
-read -rp "  Username [GabryXn]: " GITHUB_USER
+ask "  Username [GabryXn]: " GITHUB_USER
 GITHUB_USER="${GITHUB_USER:-GabryXn}"
 
 # Domain
 echo ""
 echo -e "${YELLOW}Your public domain (e.g. gabry-remote-vibecoder.duckdns.org):${NC}"
-read -rp "  Domain: " DOMAIN
+ask "  Domain: " DOMAIN
 [ -z "$DOMAIN" ] && { error "Domain cannot be empty"; exit 1; }
 
 # ─── Step 8: Write config.json ───────────────────────────────────────────────
