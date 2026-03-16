@@ -45,11 +45,11 @@ router.get('/', async (req, res) => {
     const octokit = getOctokit();
     const username = getGithubUser();
 
-    // Fetch all repos including private (authenticated user endpoint)
+    // Fetch all repos including private (authenticated user endpoint).
+    // Note: cannot combine `type` with `affiliation` — GitHub API rejects it.
     const { data } = await octokit.repos.listForAuthenticatedUser({
       per_page: 100,
       sort: 'updated',
-      type: 'all',
       affiliation: 'owner',
     });
 
