@@ -75,7 +75,6 @@ function initTerminal() {
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
 
   term.open(document.getElementById('terminal'));
-  fitAddon.fit();
 
   // xterm keyboard input (works on desktop; mobile uses the input bar below)
   term.onData((data) => {
@@ -83,7 +82,13 @@ function initTerminal() {
   });
 
   setupResizeObserver();
-  connect();
+
+  // Delay fit+connect by one frame so the browser has time to compute
+  // the flex container height before xterm.js measures it.
+  requestAnimationFrame(() => {
+    fitAddon.fit();
+    connect();
+  });
 }
 
 // ─── WebSocket ────────────────────────────────────────────────
@@ -107,7 +112,10 @@ function connect() {
     setStatus('connected');
     reconnectDelay = RECONNECT_BASE_MS;
     hideOverlay();
+    // Send resize so tmux redraws at the correct dimensions,
+    // then send \r to trigger any waiting prompt to re-render.
     sendResize();
+    setTimeout(() => { sendToWs('\r'); sendResize(); }, 150);
   };
 
   ws.onmessage = (e) => {
@@ -118,14 +126,15 @@ function connect() {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     if (intentionalClose) return;
     setStatus('disconnected');
+    term.writeln(`\r\n\x1b[31m[disconnected — code ${ev.code}]\x1b[0m`);
     scheduleReconnect();
   };
 
-  ws.onerror = (e) => {
-    console.error('[ws] error', e);
+  ws.onerror = () => {
+    term.writeln('\r\n\x1b[31m[WebSocket error — check server logs]\x1b[0m');
   };
 }
 
@@ -206,6 +215,7 @@ document.getElementById('btn-down').addEventListener('click',  () => { sendToWs(
 document.getElementById('btn-left').addEventListener('click',  () => { sendToWs('\x1b[D'); });
 document.getElementById('btn-right').addEventListener('click', () => { sendToWs('\x1b[C'); });
 document.getElementById('btn-scroll-bottom').addEventListener('click', () => { term.scrollToBottom(); });
+document.getElementById('btn-refresh').addEventListener('click', () => { sendResize(); sendToWs('\r'); term.scrollToBottom(); });
 
 document.getElementById('btn-kill-session').addEventListener('click', async () => {
   if (!confirm(`Kill tmux session claude-${repo}?\n\nClaude Code will be terminated.`)) return;
