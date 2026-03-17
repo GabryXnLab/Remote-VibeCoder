@@ -1,0 +1,21 @@
+.base {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  padding: 10px 12px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s;
+  -webkit-appearance: none;
+}
+
+.base:focus { border-color: var(--accent-orange); }
+.base::placeholder { color: var(--text-dim); }
+
+.mobile {
+  border-radius: 5px;
+  padding: 8px 10px;
+}

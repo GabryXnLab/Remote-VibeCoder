@@ -1,0 +1,92 @@
+.base {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  text-decoration: none;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.base:active  { opacity: 0.8; }
+.base:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Variants ── */
+
+.primary { background: var(--accent-orange); color: #fff; border-color: var(--accent-orange); }
+.primary:hover:not(:disabled) { background: var(--accent-orange-light); border-color: var(--accent-orange-light); }
+
+.secondary { background: transparent; color: var(--text-primary); border-color: var(--border-subtle); }
+.secondary:hover:not(:disabled) { border-color: var(--accent-orange); color: var(--accent-orange-light); }
+
+.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+.text {
+  background: none;
+  border: none;
+  color: var(--accent-orange-light);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: 0;
+}
+.text:hover:not(:disabled) { color: var(--accent-orange); }
+
+.git { background: transparent; color: #4ade80; border-color: #14532d; }
+.git:hover:not(:disabled) { background: #14532d; color: #86efac; }
+
+.toolbar {
+  padding: 6px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.toolbar:active { background: var(--border-subtle); border-color: var(--accent-orange); color: var(--accent-orange-light); }
+
+.theme {
+  font-size: 15px;
+  padding: 4px 7px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.theme:active { border-color: var(--accent-orange); color: var(--accent-orange-light); }
+
+/* ── Sizes (primary / secondary / danger / text / git only) ── */
+.sm { padding: 5px 10px;  font-size: 12px; }
+.md { padding: 8px 16px;  font-size: 14px; }
+.lg { padding: 12px 24px; font-size: 16px; }
+
+/* ── Modifiers ── */
+.fullWidth { width: 100%; }
+.loading   { pointer-events: none; }
+
+.recording {
+  background:   var(--danger) !important;
+  border-color: var(--danger) !important;
+  color: #fff !important;
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+
+/* ── Icon slots ── */
+.iconLeft  { display: inline-flex; }
+.iconRight { display: inline-flex; }

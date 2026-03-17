@@ -1,0 +1,18 @@
+.label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-orange);
+  flex-shrink: 0;
+  cursor: pointer;
+}

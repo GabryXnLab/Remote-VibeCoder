@@ -1,0 +1,13 @@
+.base {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.3s;
+  flex-shrink: 0;
+}
+
+.connected    { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.connecting   { background: var(--accent-orange); animation: pulse 1s ease-in-out infinite; }
+.disconnected { background: var(--danger); }
+.activity     { animation: activity-pulse 0.35s ease-in-out 3; }

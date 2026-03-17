@@ -94,13 +94,18 @@ function handlePtyUpgrade(ws, req) {
   // any early PTY output until the capture promise settles to avoid
   // interleaved ordering.
 
-  let scrollbackSent = false;
-  const earlyBuffer  = [];
+  let scrollbackSent   = false;
+  const earlyBuffer    = [];
+  let earlyBufferBytes = 0;
+  const EARLY_BUFFER_LIMIT = 256 * 1024; // 256 KB — prevent OOM on 1 GB VM
 
   // Buffer all PTY output until scrollback is sent
   ptyProcess.onData((data) => {
     if (!scrollbackSent) {
-      earlyBuffer.push(data);
+      if (earlyBufferBytes < EARLY_BUFFER_LIMIT) {
+        earlyBuffer.push(data);
+        earlyBufferBytes += data.length;
+      }
       return;
     }
     if (ws.readyState === ws.OPEN) {

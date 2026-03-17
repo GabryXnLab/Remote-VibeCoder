@@ -4,7 +4,7 @@
 const RECONNECT_BASE_MS  = 1500;
 const RECONNECT_MAX_MS   = 30000;
 const RECONNECT_FACTOR   = 1.5;
-const IDLE_NOTIFY_MS     = 5000;   // Silence after activity → notification
+const MIN_COLS           = 220; // prevents structured output from wrapping on narrow screens
 
 // ─── xterm.js themes ─────────────────────────────────────────────────────────
 const XTERM_DARK_THEME = {
@@ -70,11 +70,6 @@ let reconnectTimer  = null;
 let reconnectDelay  = RECONNECT_BASE_MS;
 let intentionalClose = false;
 
-// Notification state
-let notificationsEnabled = false;
-let _hadActivity         = false;
-let _idleNotifyTimer     = null;
-
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 const statusDot        = document.getElementById('status-dot');
 const statusText       = document.getElementById('status-text');
@@ -84,9 +79,9 @@ const reconnectBtn     = document.getElementById('reconnect-btn');
 const terminalTitle    = document.getElementById('terminal-title');
 const mobileInput      = document.getElementById('mobile-input');
 const btnSend          = document.getElementById('btn-send');
+const btnMic           = document.getElementById('btn-mic');
 const btnFiles         = document.getElementById('btn-files');
 const btnTheme         = document.getElementById('btn-theme');
-const btnNotify        = document.getElementById('btn-notify');
 const fileDrawer       = document.getElementById('file-drawer');
 const fileDrawerList   = document.getElementById('file-drawer-list');
 const fileDrawerPath   = document.getElementById('file-drawer-path');
@@ -129,6 +124,7 @@ function initTerminal() {
   // flex container height before xterm measures it.
   requestAnimationFrame(() => {
     fitAddon.fit();
+    if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows);
     connect();
   });
 }
@@ -157,7 +153,7 @@ function connect() {
     // Send resize immediately, then again after 150ms to ensure tmux redraws
     // at the correct dimensions.
     sendResize();
-    setTimeout(() => { sendToWs('\r'); sendResize(); }, 150);
+    setTimeout(() => { sendResize(); }, 150);
   };
 
   ws.onmessage = (e) => {
@@ -189,6 +185,14 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(connect, delay);
 }
 
+function fitAndResize() {
+  try {
+    fitAddon.fit();
+    if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows);
+    sendResize();
+  } catch (_) {}
+}
+
 function sendResize() {
   if (!ws || ws.readyState !== WebSocket.OPEN || !term) return;
   ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
@@ -201,13 +205,22 @@ function sendToWs(data) {
 // ─── Resize observer ──────────────────────────────────────────────────────────
 function setupResizeObserver() {
   const wrapper = document.querySelector('.terminal-wrapper');
-  new ResizeObserver(() => {
-    try { fitAddon.fit(); sendResize(); } catch (_) {}
-  }).observe(wrapper);
+  new ResizeObserver(() => { fitAndResize(); }).observe(wrapper);
 
   window.addEventListener('orientationchange', () => {
-    setTimeout(() => { try { fitAddon.fit(); sendResize(); } catch (_) {} }, 300);
+    setTimeout(() => { fitAndResize(); }, 300);
   });
+
+  // On mobile, shrink the terminal page to the visual viewport height so the
+  // input bar always stays above the software keyboard.
+  if (window.visualViewport) {
+    const termPage = document.querySelector('.terminal-page');
+    const onViewportChange = () => {
+      termPage.style.height = window.visualViewport.height + 'px';
+      fitAndResize();
+    };
+    window.visualViewport.addEventListener('resize', onViewportChange);
+  }
 }
 
 // ─── Status UI ────────────────────────────────────────────────────────────────
@@ -238,38 +251,6 @@ function onTerminalData() {
   statusDot._activityTimer = setTimeout(() => {
     statusDot.classList.remove('activity');
   }, 1000);
-
-  // Track idle time for notifications
-  if (!notificationsEnabled) return;
-  _hadActivity = true;
-  clearTimeout(_idleNotifyTimer);
-  _idleNotifyTimer = setTimeout(() => {
-    if (_hadActivity && document.hidden && Notification.permission === 'granted') {
-      new Notification('Remote VibeCoder', {
-        body: `${repo}: Claude Code is ready`,
-        tag:  'claude-idle',   // Replaces previous notification
-      });
-    }
-    _hadActivity = false;
-  }, IDLE_NOTIFY_MS);
-}
-
-function requestNotificationPermission() {
-  if (!('Notification' in window)) {
-    term.writeln('\r\n\x1b[33m[Notifications not supported in this browser]\x1b[0m');
-    return;
-  }
-  if (Notification.permission === 'denied') {
-    term.writeln('\r\n\x1b[33m[Notifications blocked — enable in browser settings]\x1b[0m');
-    return;
-  }
-  Notification.requestPermission().then((perm) => {
-    notificationsEnabled = perm === 'granted';
-    if (btnNotify) btnNotify.textContent = notificationsEnabled ? '🔕' : '🔔';
-    if (notificationsEnabled) {
-      term.writeln('\r\n\x1b[32m[Notifications enabled]\x1b[0m');
-    }
-  });
 }
 
 // ─── Mobile input bar ─────────────────────────────────────────────────────────
@@ -378,8 +359,7 @@ document.getElementById('btn-refresh').addEventListener('click',     () => {
 // Theme toggle
 if (btnTheme) btnTheme.addEventListener('click', () => applyTheme(!isDarkTheme));
 
-// Notification toggle
-if (btnNotify) btnNotify.addEventListener('click', requestNotificationPermission);
+document.getElementById('btn-enter').addEventListener('click',       () => { sendToWs('\r'); });
 
 document.getElementById('btn-kill-session').addEventListener('click', async () => {
   if (!confirm(`Kill tmux session claude-${repo}?\n\nClaude Code will be terminated.`)) return;
@@ -498,6 +478,107 @@ function formatFileSize(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
 }
+
+// ─── Voice input ──────────────────────────────────────────────────────────────
+(function setupVoice() {
+  const voice = new VoiceInput();
+
+  if (!voice.isSupported()) return; // hide button, do nothing
+  btnMic.classList.remove('hidden');
+
+  // ── Error tooltip ────────────────────────────────────────────────────────
+  const errorEl = document.createElement('div');
+  errorEl.className = 'voice-error';
+  document.querySelector('.mobile-input-bar').appendChild(errorEl);
+
+  let errorTimer = null;
+  function showVoiceError(msg) {
+    errorEl.textContent = msg;
+    errorEl.classList.add('visible');
+    clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => errorEl.classList.remove('visible'), 4000);
+  }
+
+  // ── Saved prefix: text that was already in the input before dictation ────
+  // Interim results are appended to this prefix while speaking; on final
+  // the prefix is updated so the next utterance continues from there.
+  let savedPrefix = '';
+
+  function setInterimText(text) {
+    mobileInput.value = savedPrefix + text;
+    mobileInput.classList.add('listening');
+  }
+
+  function commitFinalText(text) {
+    const committed = savedPrefix + text;
+    mobileInput.value = committed;
+    savedPrefix = committed;           // next utterance will append
+    mobileInput.classList.remove('listening');
+  }
+
+  function resetListeningState() {
+    mobileInput.classList.remove('listening');
+    btnMic.classList.remove('recording');
+  }
+
+  // ── VoiceInput callbacks ─────────────────────────────────────────────────
+  voice.onStart = () => {
+    savedPrefix = mobileInput.value;   // preserve any text already typed
+    btnMic.classList.add('recording');
+    errorEl.classList.remove('visible');
+  };
+
+  voice.onInterim = (text) => {
+    setInterimText(text);
+  };
+
+  voice.onFinal = (text) => {
+    commitFinalText(text);
+  };
+
+  voice.onEnd = () => {
+    resetListeningState();
+    // If content was added, focus the input so user can review / edit / send
+    if (mobileInput.value) mobileInput.focus();
+  };
+
+  voice.onError = (msg) => {
+    resetListeningState();
+    // On permission error, also restore original text (discard any interim)
+    mobileInput.value = savedPrefix;
+    showVoiceError(msg);
+  };
+
+  // ── Mic button click ─────────────────────────────────────────────────────
+  btnMic.addEventListener('click', () => {
+    if (voice.isActive()) {
+      // Manual stop: discard interim text, keep only committed prefix
+      mobileInput.value = savedPrefix;
+      mobileInput.classList.remove('listening');
+      voice.stop();
+    } else {
+      voice.start();
+    }
+  });
+
+  // ── Stop recording when page goes to background (mobile) ─────────────────
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && voice.isActive()) {
+      mobileInput.value = savedPrefix; // discard incomplete interim
+      voice.stop();
+    }
+  });
+
+  // ── Stop recording on WebSocket disconnect ───────────────────────────────
+  // Monitor the status dot class; if the connection drops while recording,
+  // stop cleanly and restore the committed text.
+  new MutationObserver(() => {
+    if (statusDot.classList.contains('disconnected') && voice.isActive()) {
+      mobileInput.value = savedPrefix;
+      voice.stop();
+    }
+  }).observe(statusDot, { attributes: true, attributeFilter: ['class'] });
+})();
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', initTerminal);

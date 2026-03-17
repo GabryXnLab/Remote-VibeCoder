@@ -1,0 +1,35 @@
+.base {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-panel);
+  flex-shrink: 0;
+}
+
+.default  { padding: 0 16px; }
+.terminal { padding: 0 12px; gap: 8px; }
+
+/* ── Logo slot (used by pages inside Header) ── */
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-orange-light);
+}
+
+.logo span {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+/* ── Actions slot ── */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

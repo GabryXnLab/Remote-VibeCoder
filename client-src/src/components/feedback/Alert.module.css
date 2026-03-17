@@ -1,0 +1,18 @@
+.base {
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.error   { background: #2d1a1a; border: 1px solid #7f1d1d; color: #fca5a5; }
+.success { background: #1a2d1a; border: 1px solid #14532d; color: #86efac; font-family: var(--font-mono); }
+.info    { background: var(--bg-panel); border: 1px solid var(--border-subtle); color: var(--text-secondary); }
+
+/* Compact variant for inside modals / inline feedback */
+.small {
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  margin: 0 0 8px;
+}

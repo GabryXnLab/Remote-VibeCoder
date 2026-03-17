@@ -83,7 +83,14 @@ router.post('/:repo', async (req, res) => {
   }
 
   const shellMode  = req.query.shell === 'true';
-  const startCmd   = shellMode ? (process.env.SHELL || '/bin/bash') : 'claude';
+  // Whitelist allowed shells to prevent injection if SHELL env var is tampered with
+  const ALLOWED_SHELLS = new Set([
+    '/bin/bash', '/bin/sh', '/bin/zsh',
+    '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish',
+  ]);
+  const rawShell   = process.env.SHELL || '/bin/bash';
+  const safeShell  = ALLOWED_SHELLS.has(rawShell) ? rawShell : '/bin/bash';
+  const startCmd   = shellMode ? safeShell : 'claude';
   const mode       = shellMode ? 'shell' : 'claude';
   const sessionName = tmuxSessionName(repo);
 

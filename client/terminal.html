@@ -22,7 +22,6 @@
       <span class="terminal-title" id="terminal-title">Loading…</span>
       <button class="toolbar-btn" id="btn-files">Files</button>
       <button class="btn-theme" id="btn-theme" title="Toggle light/dark theme">☀</button>
-      <button class="btn-notify" id="btn-notify" title="Enable notifications">🔔</button>
       <div class="terminal-status">
         <div class="status-dot connecting" id="status-dot"></div>
         <span id="status-text">Connecting</span>
@@ -52,11 +51,13 @@
         spellcheck="false"
         enterkeyhint="send"
       >
+      <button class="mic-btn hidden" id="btn-mic" title="Voice input" aria-label="Start voice input">🎤</button>
       <button class="mobile-send-btn" id="btn-send">Send</button>
     </div>
 
     <!-- Toolbar: special keys -->
     <div class="terminal-toolbar" id="toolbar">
+      <button class="toolbar-btn" id="btn-enter" title="Enter">↵</button>
       <button class="toolbar-btn" id="btn-ctrlc" title="Ctrl+C">Ctrl+C</button>
       <button class="toolbar-btn" id="btn-tab" title="Tab">Tab</button>
       <button class="toolbar-btn" id="btn-esc" title="Escape">Esc</button>
@@ -89,6 +90,7 @@
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+  <script src="js/voice.js"></script>
   <script src="js/terminal.js"></script>
 </body>
 </html>

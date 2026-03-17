@@ -10,17 +10,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Audit dependencies
+      - name: Audit server dependencies
         run: |
           cd server
           npm ci --ignore-scripts
-          # Fail on high or critical severity vulnerabilities
           npm audit --audit-level=high
+
+  typecheck:
+    name: TypeScript gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install frontend dependencies
+        run: cd client-src && npm install
+      - name: tsc --noEmit (strict gate)
+        run: cd client-src && npx tsc --noEmit
+      - name: Vite build (verify bundle compiles)
+        run: cd client-src && npm run build
 
   deploy:
     name: SSH deploy → e2-micro
     runs-on: ubuntu-latest
-    needs: audit
+    needs: [audit, typecheck]
 
     steps:
       - name: Checkout (for changed-files detection)
@@ -31,7 +45,6 @@ jobs:
       - name: Detect what changed
         id: changes
         run: |
-          # Handle first commit (no HEAD~1)
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             git diff --name-only HEAD~1 HEAD > changed.txt
           else
@@ -61,8 +74,14 @@ jobs:
             git -C ~/claude-mobile fetch origin master
             git -C ~/claude-mobile reset --hard origin/master
 
-            echo "── Installing dependencies ──"
+            echo "── Installing server dependencies ──"
             cd ~/claude-mobile/server && npm install --omit=dev
+
+            echo "── Installing frontend dependencies ──"
+            cd ~/claude-mobile/client-src && npm install
+
+            echo "── Building frontend (Vite → dist/) ──"
+            cd ~/claude-mobile/client-src && npm run build
 
             if [ "${SERVICE_CHANGED:-false}" = "true" ]; then
               echo "── Updating systemd unit ──"

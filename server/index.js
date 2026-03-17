@@ -64,7 +64,7 @@ app.set('trust proxy', 1);
 
 // Ensure the sessions directory exists before FileStore tries to use it.
 const sessionsDir = path.join(os.homedir(), '.claude-mobile', 'sessions');
-fs.mkdirSync(sessionsDir, { recursive: true });
+fs.mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
 
 const sessionParser = session({
   store: new FileStore({
@@ -141,13 +141,19 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-// Serve client static files
-app.use(express.static(path.join(__dirname, '..', 'client')));
+// Serve built frontend (dist/ produced by Vite in client-src/)
+// Falls back to client/ in development if dist/ doesn't exist yet
+const distDir  = path.join(__dirname, '..', 'dist');
+const clientDir = path.join(__dirname, '..', 'client');
+const staticRoot = fs.existsSync(distDir) ? distDir : clientDir;
+
+app.use(express.static(staticRoot));
 
 // SPA fallback
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
-  res.sendFile(path.join(__dirname, '..', 'client', 'index.html'));
+  const indexFile = path.join(staticRoot, 'index.html');
+  res.sendFile(indexFile);
 });
 
 // ─── HTTP + WebSocket server ──────────────────────────────────────────────────

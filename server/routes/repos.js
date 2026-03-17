@@ -92,6 +92,7 @@ router.get('/', async (req, res) => {
       fullName:      r.full_name,
       description:   r.description,
       private:       r.private,
+      archived:      r.archived,
       updatedAt:     r.updated_at,
       defaultBranch: r.default_branch,
       cloned:        localDirs.has(r.name),
@@ -196,7 +197,9 @@ router.get('/:name/tree', (req, res) => {
   try {
     const resolved     = fs.realpathSync(targetPath);
     const resolvedRoot = fs.realpathSync(repoRoot);
-    if (!resolved.startsWith(resolvedRoot)) {
+    // Use separator-aware prefix check to avoid false positives like
+    // /repos/myrepo-evil matching prefix /repos/myrepo
+    if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
 
@@ -237,9 +240,159 @@ router.delete('/:name', (req, res) => {
   }
 
   try {
+    // Path traversal guard (defense-in-depth — name regex already prevents this)
+    const resolved = fs.realpathSync(repoPath);
+    if (resolved !== path.join(REPOS_DIR, name) && !resolved.startsWith(REPOS_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
     fs.rmSync(repoPath, { recursive: true, force: true });
     res.json({ ok: true });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/repos/:name/git-status ─────────────────────────────────────────
+router.get('/:name/git-status', async (req, res) => {
+  const { name } = req.params;
+  if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid repo name' });
+  }
+
+  const repoPath = path.join(REPOS_DIR, name);
+  if (!fs.existsSync(repoPath)) {
+    return res.status(404).json({ error: 'Repo not cloned locally' });
+  }
+
+  try {
+    const resolved = fs.realpathSync(repoPath);
+    if (resolved !== repoPath && !resolved.startsWith(REPOS_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    const git = simpleGit(resolved);
+    const [status, cfgName, cfgEmail] = await Promise.all([
+      git.status(),
+      git.getConfig('user.name').catch(() => ({ value: '' })),
+      git.getConfig('user.email').catch(() => ({ value: '' })),
+    ]);
+
+    res.json({
+      branch:      status.current,
+      tracking:    status.tracking,
+      ahead:       status.ahead,
+      behind:      status.behind,
+      files:       status.files.map(f => ({
+        path:        f.path,
+        from:        f.from || null,
+        index:       f.index,
+        working_dir: f.working_dir,
+      })),
+      authorName:  cfgName.value  || '',
+      authorEmail: cfgEmail.value || '',
+    });
+  } catch (err) {
+    console.error('[repos] git-status error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/repos/:name/commit ─────────────────────────────────────────────
+router.post('/:name/commit', async (req, res) => {
+  const { name } = req.params;
+  if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid repo name' });
+  }
+
+  const { message, files, authorName, authorEmail, push: doPush } = req.body;
+
+  // Validate message
+  if (!message || typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'Commit message is required' });
+  }
+  if (message.length > 2000) {
+    return res.status(400).json({ error: 'Commit message too long' });
+  }
+  if (/[\0]/.test(message)) {
+    return res.status(400).json({ error: 'Invalid characters in commit message' });
+  }
+
+  // Validate files list
+  if (!Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: 'No files selected for commit' });
+  }
+  for (const f of files) {
+    if (typeof f !== 'string' || /[\0\r\n]/.test(f) || f.length > 4096) {
+      return res.status(400).json({ error: 'Invalid file path in list' });
+    }
+  }
+
+  // Validate optional author fields
+  if (authorName !== undefined) {
+    if (typeof authorName !== 'string' || authorName.length > 100 || /[\0\r\n]/.test(authorName)) {
+      return res.status(400).json({ error: 'Invalid author name' });
+    }
+  }
+  if (authorEmail !== undefined) {
+    if (typeof authorEmail !== 'string' || authorEmail.length > 200 || /[\0\r\n]/.test(authorEmail)) {
+      return res.status(400).json({ error: 'Invalid author email' });
+    }
+  }
+
+  const repoPath = path.join(REPOS_DIR, name);
+  if (!fs.existsSync(repoPath)) {
+    return res.status(404).json({ error: 'Repo not cloned locally' });
+  }
+
+  try {
+    const resolved = fs.realpathSync(repoPath);
+    if (resolved !== repoPath && !resolved.startsWith(REPOS_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    // Validate every file path stays within the repo root
+    for (const f of files) {
+      const abs = path.resolve(resolved, f);
+      if (abs !== resolved && !abs.startsWith(resolved + path.sep)) {
+        return res.status(400).json({ error: `Path traversal detected: ${f}` });
+      }
+    }
+
+    // Author env vars (never stored in git config — only in memory for this commit)
+    const authorEnv = {};
+    if (authorName && authorName.trim()) {
+      authorEnv.GIT_AUTHOR_NAME    = authorName.trim();
+      authorEnv.GIT_COMMITTER_NAME = authorName.trim();
+    }
+    if (authorEmail && authorEmail.trim()) {
+      authorEnv.GIT_AUTHOR_EMAIL    = authorEmail.trim();
+      authorEnv.GIT_COMMITTER_EMAIL = authorEmail.trim();
+    }
+
+    const git = simpleGit(resolved);
+
+    // Stage selected files
+    await git.add(files);
+
+    // Commit with optional author override
+    const commitResult = await git
+      .env({ ...process.env, ...authorEnv })
+      .commit(message.trim());
+
+    // Optionally push to origin
+    if (doPush) {
+      const cfg    = config.get();
+      const token  = cfg.githubPat || process.env.GITHUB_PAT;
+      const status = await git.status();
+      const branch = status.current;
+      await withGitCredentials(token, resolved, (credGit) =>
+        credGit.push('origin', branch)
+      );
+    }
+
+    res.json({ ok: true, commit: commitResult.commit });
+  } catch (err) {
+    console.error('[repos] commit error:', err);
     res.status(500).json({ error: err.message });
   }
 });
