@@ -1,13 +1,13 @@
 'use strict';
 
-const express = require('express');
+const express    = require('express');
 const { execFile } = require('child_process');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
+const path       = require('path');
+const os         = require('os');
+const fs         = require('fs');
 
-const router = express.Router();
-const REPOS_DIR = path.join(os.homedir(), 'repos');
+const router     = express.Router();
+const REPOS_DIR  = path.join(os.homedir(), 'repos');
 
 const SESSION_NAME_RE = /^[a-zA-Z0-9_.-]+$/;
 
@@ -24,31 +24,35 @@ function runTmux(args) {
   });
 }
 
-// GET /api/sessions — list all active tmux sessions
+// ─── GET /api/sessions ────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const output = await runTmux(['list-sessions', '-F', '#{session_name}:#{session_windows}:#{session_created}']);
+    const output = await runTmux([
+      'list-sessions', '-F',
+      '#{session_name}:#{session_windows}:#{session_created}',
+    ]);
     const sessions = output
       .split('\n')
       .filter(Boolean)
       .map(line => {
         const [name, windows, created] = line.split(':');
-        return { name, windows: parseInt(windows, 10), created: parseInt(created, 10) * 1000 };
+        return {
+          name,
+          windows: parseInt(windows, 10),
+          created: parseInt(created, 10) * 1000,
+        };
       })
-      .filter(s => s.name.startsWith('claude-'));
+      .filter(s => s.name && s.name.startsWith('claude-'));
 
     res.json({ sessions });
   } catch (err) {
-    // tmux returns exit 1 if no sessions — treat as empty list
-    if (err.code === 1) {
-      res.json({ sessions: [] });
-    } else {
-      res.status(500).json({ error: err.message });
-    }
+    // tmux exits with code 1 when no sessions exist — not an error
+    if (err.code === 1) return res.json({ sessions: [] });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/sessions/:repo — status of a specific repo's session
+// ─── GET /api/sessions/:repo ──────────────────────────────────────────────────
 router.get('/:repo', async (req, res) => {
   const { repo } = req.params;
   if (!SESSION_NAME_RE.test(repo)) {
@@ -64,7 +68,9 @@ router.get('/:repo', async (req, res) => {
   }
 });
 
-// POST /api/sessions/:repo — create/ensure a tmux session for a repo
+// ─── POST /api/sessions/:repo ─────────────────────────────────────────────────
+// Query params:
+//   ?shell=true  — start a bare shell instead of `claude`
 router.post('/:repo', async (req, res) => {
   const { repo } = req.params;
   if (!SESSION_NAME_RE.test(repo)) {
@@ -76,37 +82,38 @@ router.post('/:repo', async (req, res) => {
     return res.status(404).json({ error: 'Repo not cloned locally' });
   }
 
+  const shellMode  = req.query.shell === 'true';
+  const startCmd   = shellMode ? (process.env.SHELL || '/bin/bash') : 'claude';
+  const mode       = shellMode ? 'shell' : 'claude';
   const sessionName = tmuxSessionName(repo);
 
   try {
     // Check if session already exists
     try {
       await runTmux(['has-session', '-t', sessionName]);
-      // Already exists
-      return res.json({ ok: true, sessionName, created: false });
+      return res.json({ ok: true, sessionName, created: false, mode: 'unknown' });
     } catch (_) {
-      // Doesn't exist — create it
+      // Session doesn't exist — create it
     }
 
-    // Create new detached tmux session running claude in the repo dir
     await runTmux([
       'new-session',
-      '-d',           // detached
+      '-d',              // detached
       '-s', sessionName,
-      '-c', repoPath, // start directory
+      '-c', repoPath,    // working directory
       '-x', '220',
       '-y', '50',
-      'claude',       // start claude immediately
+      startCmd,          // initial command (claude or bash)
     ]);
 
-    res.json({ ok: true, sessionName, created: true });
+    res.json({ ok: true, sessionName, created: true, mode });
   } catch (err) {
     console.error('[sessions] create error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// DELETE /api/sessions/:repo — kill tmux session
+// ─── DELETE /api/sessions/:repo ───────────────────────────────────────────────
 router.delete('/:repo', async (req, res) => {
   const { repo } = req.params;
   if (!SESSION_NAME_RE.test(repo)) {

@@ -1,75 +1,100 @@
 'use strict';
 
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const express   = require('express');
+const fs        = require('fs');
+const path      = require('path');
+const os        = require('os');
+const crypto    = require('crypto');
 const { Octokit } = require('@octokit/rest');
 const simpleGit = require('simple-git');
+const config    = require('../config');
 
-const router = express.Router();
-
-const CONFIG_PATH = path.join(os.homedir(), '.claude-mobile', 'config.json');
+const router    = express.Router();
 const REPOS_DIR = path.join(os.homedir(), 'repos');
 
-function loadConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } catch (e) {
-    return {};
-  }
-}
-
 function getOctokit() {
-  const config = loadConfig();
-  const token = config.githubPat || process.env.GITHUB_PAT;
+  const cfg   = config.get();
+  const token = cfg.githubPat || process.env.GITHUB_PAT;
   if (!token) throw new Error('GitHub PAT not configured');
   return new Octokit({ auth: token });
 }
 
 function getGithubUser() {
-  const config = loadConfig();
-  return config.githubUser || process.env.GITHUB_USER || 'GabryXn';
+  const cfg = config.get();
+  return cfg.githubUser || process.env.GITHUB_USER || '';
 }
 
-// Ensure repos directory exists
 function ensureReposDir() {
   if (!fs.existsSync(REPOS_DIR)) {
     fs.mkdirSync(REPOS_DIR, { recursive: true });
   }
 }
 
-// GET /api/repos — list user's GitHub repos + local clone status
+/**
+ * Run a git operation with GitHub credentials provided via GIT_ASKPASS.
+ * The token is written to a temporary file (never embedded in shell commands)
+ * so it cannot be stolen via /proc or shell history.
+ *
+ * The remote URL stored in .git/config will be the plain HTTPS URL without
+ * any credentials.
+ */
+async function withGitCredentials(token, cwd, fn) {
+  const tmpDir     = path.join(os.tmpdir(), `vc-cred-${crypto.randomBytes(8).toString('hex')}`);
+  const tokenFile  = path.join(tmpDir, 'token');
+  const helperFile = path.join(tmpDir, 'askpass.sh');
+
+  fs.mkdirSync(tmpDir, { mode: 0o700 });
+  fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+  // The helper script answers both Username and Password prompts.
+  // For GitHub PAT auth the username can be anything non-empty; only the
+  // password (the PAT itself) matters.
+  fs.writeFileSync(
+    helperFile,
+    `#!/bin/sh\ncase "$1" in *Username*) printf 'x-access-token';; *) cat "${tokenFile}";; esac\n`,
+    { mode: 0o700 }
+  );
+
+  try {
+    const git = simpleGit(cwd).env({
+      ...process.env,
+      GIT_ASKPASS:         helperFile,
+      GIT_TERMINAL_PROMPT: '0',   // Fail fast instead of hanging on prompt
+    });
+    return await fn(git);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+// ─── GET /api/repos ───────────────────────────────────────────────────────────
+// List all of the authenticated user's GitHub repos (all pages) + local clone
+// status.
 router.get('/', async (req, res) => {
   try {
-    const octokit = getOctokit();
+    const octokit  = getOctokit();
     const username = getGithubUser();
 
-    // Fetch all repos including private (authenticated user endpoint).
-    // Note: cannot combine `type` with `affiliation` — GitHub API rejects it.
-    const { data } = await octokit.repos.listForAuthenticatedUser({
-      per_page: 100,
-      sort: 'updated',
+    // Paginate through ALL repos — octokit.paginate handles multiple requests.
+    const data = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
+      sort:        'updated',
       affiliation: 'owner',
     });
 
     ensureReposDir();
     const localDirs = new Set(
       fs.readdirSync(REPOS_DIR).filter(d => {
-        try {
-          return fs.statSync(path.join(REPOS_DIR, d)).isDirectory();
-        } catch { return false; }
+        try { return fs.statSync(path.join(REPOS_DIR, d)).isDirectory(); } catch { return false; }
       })
     );
 
     const repos = data.map(r => ({
-      name: r.name,
-      fullName: r.full_name,
-      description: r.description,
-      private: r.private,
-      updatedAt: r.updated_at,
+      name:          r.name,
+      fullName:      r.full_name,
+      description:   r.description,
+      private:       r.private,
+      updatedAt:     r.updated_at,
       defaultBranch: r.default_branch,
-      cloned: localDirs.has(r.name),
+      cloned:        localDirs.has(r.name),
     }));
 
     res.json({ repos, reposDir: REPOS_DIR });
@@ -79,7 +104,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/repos/clone — clone a repo by name
+// ─── POST /api/repos/clone ────────────────────────────────────────────────────
 router.post('/clone', async (req, res) => {
   const { name } = req.body;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
@@ -87,10 +112,12 @@ router.post('/clone', async (req, res) => {
   }
 
   try {
-    const octokit = getOctokit();
+    const octokit  = getOctokit();
     const username = getGithubUser();
+    const cfg      = config.get();
+    const token    = cfg.githubPat || process.env.GITHUB_PAT;
 
-    // Verify repo belongs to user (prevent path traversal / arbitrary clone)
+    // Verify ownership before cloning (security + better error messages)
     let repoData;
     try {
       const { data } = await octokit.repos.get({ owner: username, repo: name });
@@ -100,19 +127,19 @@ router.post('/clone', async (req, res) => {
     }
 
     ensureReposDir();
-    const config = loadConfig();
-    const token = config.githubPat || process.env.GITHUB_PAT;
     const destPath = path.join(REPOS_DIR, name);
 
     if (fs.existsSync(destPath)) {
       return res.status(409).json({ error: 'Repo already cloned', path: destPath });
     }
 
-    // Build authenticated clone URL
-    const cloneUrl = `https://${username}:${token}@github.com/${username}/${name}.git`;
+    // Use clean HTTPS URL — no token embedded. Credentials are provided via
+    // GIT_ASKPASS so they never appear in .git/config.
+    const cloneUrl = `https://github.com/${username}/${name}.git`;
 
-    const git = simpleGit(REPOS_DIR);
-    await git.clone(cloneUrl, destPath, ['--depth', '1']);
+    await withGitCredentials(token, REPOS_DIR, (git) =>
+      git.clone(cloneUrl, destPath)
+    );
 
     res.json({ ok: true, path: destPath, name, fullName: repoData.full_name });
   } catch (err) {
@@ -121,7 +148,7 @@ router.post('/clone', async (req, res) => {
   }
 });
 
-// POST /api/repos/pull — git pull on a cloned repo
+// ─── POST /api/repos/pull ─────────────────────────────────────────────────────
 router.post('/pull', async (req, res) => {
   const { name } = req.body;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
@@ -134,14 +161,16 @@ router.post('/pull', async (req, res) => {
   }
 
   try {
-    // Verify the directory is inside REPOS_DIR (prevent traversal)
+    // Path traversal guard
     const resolved = fs.realpathSync(repoPath);
     if (!resolved.startsWith(REPOS_DIR)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
 
-    const git = simpleGit(repoPath);
-    const result = await git.pull();
+    const cfg   = config.get();
+    const token = cfg.githubPat || process.env.GITHUB_PAT;
+
+    const result = await withGitCredentials(token, repoPath, (git) => git.pull());
     res.json({ ok: true, result });
   } catch (err) {
     console.error('[repos] pull error:', err);
@@ -149,7 +178,7 @@ router.post('/pull', async (req, res) => {
   }
 });
 
-// GET /api/repos/:name/tree?path= — list directory contents of a cloned repo
+// ─── GET /api/repos/:name/tree ────────────────────────────────────────────────
 router.get('/:name/tree', (req, res) => {
   const { name } = req.params;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
@@ -161,11 +190,11 @@ router.get('/:name/tree', (req, res) => {
     return res.status(404).json({ error: 'Repo not cloned locally' });
   }
 
-  const rawSub = (req.query.path || '').replace(/^\/+/, '');
+  const rawSub     = (req.query.path || '').replace(/^\/+/, '');
   const targetPath = path.join(repoRoot, rawSub);
 
   try {
-    const resolved = fs.realpathSync(targetPath);
+    const resolved     = fs.realpathSync(targetPath);
     const resolvedRoot = fs.realpathSync(repoRoot);
     if (!resolved.startsWith(resolvedRoot)) {
       return res.status(400).json({ error: 'Invalid path' });
@@ -173,7 +202,17 @@ router.get('/:name/tree', (req, res) => {
 
     const entries = fs.readdirSync(resolved, { withFileTypes: true })
       .filter(e => e.name !== '.git')
-      .map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' }))
+      .map(e => {
+        const stat = (() => {
+          try { return fs.statSync(path.join(resolved, e.name)); } catch { return null; }
+        })();
+        return {
+          name:     e.name,
+          type:     e.isDirectory() ? 'dir' : 'file',
+          size:     stat && !e.isDirectory() ? stat.size : undefined,
+          modified: stat ? stat.mtimeMs : undefined,
+        };
+      })
       .sort((a, b) => {
         if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
         return a.name.localeCompare(b.name);
@@ -185,7 +224,7 @@ router.get('/:name/tree', (req, res) => {
   }
 });
 
-// DELETE /api/repos/:name — remove local clone
+// ─── DELETE /api/repos/:name ──────────────────────────────────────────────────
 router.delete('/:name', (req, res) => {
   const { name } = req.params;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {

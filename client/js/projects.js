@@ -118,6 +118,7 @@ function renderRepos(repos, activeSessions) {
       } else {
         actionsHtml = `
           <button class="btn btn-primary btn-small" data-action="open" data-repo="${escAttr(repo.name)}">Open</button>
+          <button class="btn btn-secondary btn-small" data-action="open-shell" data-repo="${escAttr(repo.name)}" title="Open a bare shell (no Claude Code)">Shell</button>
           <button class="btn btn-secondary btn-small" data-action="pull" data-repo="${escAttr(repo.name)}" title="git pull">↓</button>
         `;
       }
@@ -185,6 +186,16 @@ async function handleRepoClick(e) {
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || `Failed to start session (${res.status})`);
+      }
+      openTerminal(repo);
+      return;
+
+    } else if (action === 'open-shell') {
+      btn.textContent = 'Starting…';
+      const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}?shell=true`, { method: 'POST' });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Failed to start shell session (${res.status})`);
       }
       openTerminal(repo);
       return;

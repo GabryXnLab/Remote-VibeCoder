@@ -1,6 +1,7 @@
 [Unit]
 Description=Claude Mobile Web Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -11,11 +12,21 @@ Restart=always
 RestartSec=5
 StartLimitIntervalSec=60
 StartLimitBurst=5
+
 Environment=NODE_ENV=production
 Environment=PORT=3000
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
-# NOTE: Do NOT add PrivateDevices=true — node-pty needs /dev/ptmx
+ProtectSystem=strict
+# node-pty needs /dev/ptmx so PrivateDevices must NOT be set.
+# All user-writable paths (repos, config, sessions, app) are under /home/%i.
+ReadWritePaths=/home/%i
 
 [Install]
 WantedBy=multi-user.target

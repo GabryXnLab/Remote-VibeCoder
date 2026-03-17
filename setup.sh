@@ -124,6 +124,34 @@ success "Dependencies installed"
 mkdir -p "$REPOS_DIR"
 success "Repos directory ready: $REPOS_DIR"
 
+# ─── Git credential helper ───────────────────────────────────────────────────
+# Creates a per-user askpass script so git operations in the app use the PAT
+# from config.json without the token ever appearing in .git/config or remote URLs.
+info "Installing git credential helper…"
+mkdir -p "$HOME_DIR/bin"
+cat > "$HOME_DIR/bin/git-askpass-claude.sh" << 'ASKPASSEOF'
+#!/bin/sh
+# Remote VibeCoder — git credential helper
+# Outputs the GitHub PAT from the claude-mobile config file.
+# Called by git via GIT_ASKPASS for both Username and Password prompts.
+case "$1" in
+  *Username*) printf 'x-access-token' ;;
+  *)          node -e "
+    try {
+      const cfg = JSON.parse(require('fs').readFileSync(
+        require('os').homedir() + '/.claude-mobile/config.json', 'utf8'));
+      process.stdout.write(cfg.githubPat || '');
+    } catch(e) { process.exit(1); }" ;;
+esac
+ASKPASSEOF
+chmod +x "$HOME_DIR/bin/git-askpass-claude.sh"
+
+# Configure git to use this helper for github.com (manual terminal operations)
+git config --global credential.https://github.com.helper \
+  "!$HOME_DIR/bin/git-askpass-claude.sh"
+
+success "Git credential helper installed at ~/bin/git-askpass-claude.sh"
+
 # ─── Step 7: Interactive prompts ─────────────────────────────────────────────
 header "Step 7 / 10 — Configuration"
 
@@ -170,14 +198,17 @@ ask "  Domain: " DOMAIN
 # ─── Step 8: Write config.json ───────────────────────────────────────────────
 header "Step 8 / 10 — Writing Config"
 
-# Generate password hash using Node.js (available at this point)
+# Generate password hash using Node.js.
+# IMPORTANT: Pass the password via environment variable (not string interpolation)
+# to prevent command injection if the password contains shell special characters.
 info "Hashing password with PBKDF2…"
-HASH_DATA=$(node -e "
+HASH_DATA=$(PASSWORD="$PASSWORD" node -e "
 const crypto = require('crypto');
-const salt = crypto.randomBytes(32).toString('hex');
-const hash = crypto.pbkdf2Sync('${PASSWORD//\'/\\\'}', salt, 100000, 64, 'sha512').toString('hex');
+const password = process.env.PASSWORD;
+const salt   = crypto.randomBytes(32).toString('hex');
+const hash   = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
 const secret = crypto.randomBytes(32).toString('hex');
-console.log(JSON.stringify({salt, hash, secret}));
+console.log(JSON.stringify({ salt, hash, secret }));
 ")
 
 PASSWORD_SALT=$(echo "$HASH_DATA" | node -e "process.stdin.setEncoding('utf8');let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d).salt))")
@@ -219,6 +250,11 @@ info "Obtaining TLS certificate for ${DOMAIN}…"
 sudo certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos \
   --register-unsafely-without-email
 success "Certificate obtained"
+
+info "Verifying certbot auto-renewal…"
+sudo certbot renew --dry-run --quiet \
+  && success "Certbot auto-renewal works correctly" \
+  || warn "Certbot dry-run failed — check: sudo certbot renew --dry-run"
 
 # Full config with HTTPS + WebSocket proxy
 sudo bash -c "cat > /etc/nginx/sites-available/remote-vibecoder << NGINXEOF
@@ -276,6 +312,39 @@ else
 fi
 
 sleep 2
+
+# ─── Cron jobs ────────────────────────────────────────────────────────────────
+header "Setting up cron jobs"
+
+# Write a small backup script (avoids % escaping issues in crontab)
+cat > "$HOME_DIR/bin/backup-claude-config.sh" << 'BACKUPEOF'
+#!/bin/bash
+CFG="$HOME/.claude-mobile/config.json"
+[ -f "$CFG" ] || exit 0
+cp "$CFG" "${CFG}.bak"
+# Keep only the latest backup
+find "$HOME/.claude-mobile" -name 'config.json.bak' -maxdepth 1 | tail -n +2 | xargs rm -f 2>/dev/null
+BACKUPEOF
+chmod +x "$HOME_DIR/bin/backup-claude-config.sh"
+
+# Write a healthcheck + auto-restart script
+cat > "$HOME_DIR/bin/healthcheck-claude.sh" << HEALTHEOF
+#!/bin/bash
+curl -sf http://localhost:3000/api/health >/dev/null 2>&1 || \
+  sudo systemctl restart "claude-mobile@$(whoami)" >/dev/null 2>&1
+HEALTHEOF
+chmod +x "$HOME_DIR/bin/healthcheck-claude.sh"
+
+# Install cron jobs — remove stale entries first to stay idempotent
+(
+  crontab -l 2>/dev/null | grep -v 'backup-claude-config\|healthcheck-claude'
+  echo "# Daily config backup at 2am"
+  echo "0 2 * * * $HOME_DIR/bin/backup-claude-config.sh"
+  echo "# Health check every 5 minutes"
+  echo "*/5 * * * * $HOME_DIR/bin/healthcheck-claude.sh"
+) | crontab -
+
+success "Cron jobs installed (daily backup + 5-min healthcheck)"
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo ""
