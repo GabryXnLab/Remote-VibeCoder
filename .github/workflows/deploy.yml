@@ -40,12 +40,6 @@ jobs:
           echo "Changed files:"
           cat changed.txt
 
-          if grep -q 'server/package' changed.txt; then
-            echo "deps_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deps_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
           if grep -q 'config/claude-mobile.service' changed.txt; then
             echo "service_changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -58,7 +52,7 @@ jobs:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: DEPS_CHANGED,SERVICE_CHANGED
+          envs: SERVICE_CHANGED
           script_stop: true
           script: |
             set -euo pipefail
@@ -67,10 +61,8 @@ jobs:
             git -C ~/claude-mobile fetch origin master
             git -C ~/claude-mobile reset --hard origin/master
 
-            if [ "${DEPS_CHANGED:-false}" = "true" ]; then
-              echo "── package.json changed → npm install ──"
-              cd ~/claude-mobile/server && npm install --omit=dev
-            fi
+            echo "── Installing dependencies ──"
+            cd ~/claude-mobile/server && npm install --omit=dev
 
             if [ "${SERVICE_CHANGED:-false}" = "true" ]; then
               echo "── Updating systemd unit ──"
@@ -93,5 +85,4 @@ jobs:
               && echo "✓ Health check passed" \
               || { echo "✗ Health check failed"; exit 1; }
         env:
-          DEPS_CHANGED: ${{ steps.changes.outputs.deps_changed }}
           SERVICE_CHANGED: ${{ steps.changes.outputs.service_changed }}
