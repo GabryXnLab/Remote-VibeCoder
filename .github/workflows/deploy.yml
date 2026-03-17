@@ -64,7 +64,8 @@ jobs:
             set -euo pipefail
 
             echo "── Pulling latest code ──"
-            git -C ~/claude-mobile pull --ff-only
+            git -C ~/claude-mobile fetch origin master
+            git -C ~/claude-mobile reset --hard origin/master
 
             if [ "${DEPS_CHANGED:-false}" = "true" ]; then
               echo "── package.json changed → npm install ──"
