@@ -44,21 +44,30 @@ function captureScrollback(sessionName) {
  * Bridges the WebSocket ↔ tmux session via node-pty.
  */
 function handlePtyUpgrade(ws, req) {
-  const urlParts  = req.url.split('/');
-  const rawRepo   = decodeURIComponent(urlParts[urlParts.length - 1] || 'default');
+  // URL: /ws/pty/claude-myrepo-ab1c2d  (full tmux session name)
+  const urlParts    = req.url.split('/');
+  const rawSession  = decodeURIComponent(urlParts[urlParts.length - 1] || '');
 
   let sessionName;
   try {
-    sessionName = sanitizeSessionName(`claude-${rawRepo}`);
+    sessionName = sanitizeSessionName(rawSession); // use as-is, no 'claude-' prepend
   } catch (e) {
-    ws.close(1008, 'Invalid repo name');
+    ws.close(1008, 'Invalid session ID');
     return;
   }
 
   const reposDir = path.join(os.homedir(), 'repos');
-  const repoPath = path.join(reposDir, rawRepo);
-  // Ensure the repo directory exists; fallback to reposDir if it doesn't
-  const safeCwd  = require('fs').existsSync(repoPath) ? repoPath : reposDir;
+  // Extract repo name from session name: "claude-{repo}-{shortId}" or "claude-{repo}"
+  let safeCwd = reposDir;
+  const body = sessionName.startsWith('claude-') ? sessionName.slice('claude-'.length) : sessionName;
+  const lastDash = body.lastIndexOf('-');
+  const repo = (lastDash > 0 && body.slice(lastDash + 1).length === 6)
+    ? body.slice(0, lastDash)
+    : body;
+  if (repo && repo !== '_free') {
+    const repoPath = path.join(reposDir, repo);
+    if (require('fs').existsSync(repoPath)) safeCwd = repoPath;
+  }
 
   let ptyProcess;
   try {
