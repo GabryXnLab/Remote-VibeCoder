@@ -1,6 +1,5 @@
 import {
   useState, useEffect, useRef, useCallback,
-  type ClipboardEvent, type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Terminal, type ITheme } from 'xterm'
@@ -94,8 +93,6 @@ export function TerminalPage() {
   // const inputValueRef     = useRef('')
   const connStateRef      = useRef<ConnectionState>('connecting')
 
-  // Keep inputValueRef in sync
-  useEffect(() => { inputValueRef.current = inputValue }, [inputValue])
   // Keep connStateRef in sync for closures
   useEffect(() => { connStateRef.current = connState }, [connState])
 
