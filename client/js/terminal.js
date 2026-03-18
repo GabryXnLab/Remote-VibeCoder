@@ -77,9 +77,9 @@ const reconnectOverlay = document.getElementById('reconnect-overlay');
 const reconnectMessage = document.getElementById('reconnect-message');
 const reconnectBtn     = document.getElementById('reconnect-btn');
 const terminalTitle    = document.getElementById('terminal-title');
-const mobileInput      = document.getElementById('mobile-input');
-const btnSend          = document.getElementById('btn-send');
-const btnMic           = document.getElementById('btn-mic');
+// const mobileInput      = document.getElementById('mobile-input'); // Removed
+// const btnSend          = document.getElementById('btn-send');
+// const btnMic           = document.getElementById('btn-mic');
 const btnFiles         = document.getElementById('btn-files');
 const btnTheme         = document.getElementById('btn-theme');
 const fileDrawer       = document.getElementById('file-drawer');
@@ -253,39 +253,7 @@ function onTerminalData() {
   }, 1000);
 }
 
-// ─── Mobile input bar ─────────────────────────────────────────────────────────
-function sendInputLine() {
-  const text = mobileInput.value;
-  if (!text) return;
-  sendToWs(text + '\r');
-  mobileInput.value = '';
-}
-
-btnSend.addEventListener('click', sendInputLine);
-
-mobileInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    sendInputLine();
-  }
-});
-
-// Clipboard paste — send pasted content directly to PTY
-mobileInput.addEventListener('paste', (e) => {
-  // Use clipboardData if available (avoids setTimeout race)
-  const pasted = e.clipboardData ? e.clipboardData.getData('text') : null;
-  if (pasted) {
-    e.preventDefault();
-    sendToWs(pasted);
-  }
-  // Fallback: wait for browser to complete the paste then send
-  else {
-    setTimeout(() => {
-      const val = mobileInput.value;
-      if (val) { sendToWs(val); mobileInput.value = ''; }
-    }, 0);
-  }
-});
+// Mobile input bar logic removed as redundant
 
 // ─── Keyboard shortcuts (desktop) ────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
@@ -294,11 +262,10 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     openDrawer();
 
-  // Ctrl+K — focus command input
+  // Ctrl+K — focus terminal (mobile input focus removed)
   } else if (e.ctrlKey && !e.shiftKey && e.key === 'k') {
     e.preventDefault();
-    mobileInput.focus();
-    mobileInput.select();
+    if (term) term.focus();
 
   // Ctrl+L — clear terminal
   } else if (e.ctrlKey && !e.shiftKey && e.key === 'l') {
@@ -435,9 +402,9 @@ async function loadDrawerPath(subpath) {
           loadDrawerPath(newPath);
         } else {
           const fullPath = subpath ? `${subpath}/${entry.name}` : entry.name;
-          mobileInput.value = (mobileInput.value ? mobileInput.value + ' ' : '') + fullPath;
+          sendToWs(fullPath); // Send directly to PTY instead of populating input field
           closeDrawer();
-          mobileInput.focus();
+          if (term) term.focus();
         }
       });
 
@@ -456,106 +423,7 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
 }
 
-// ─── Voice input ──────────────────────────────────────────────────────────────
-(function setupVoice() {
-  const voice = new VoiceInput();
-
-  if (!voice.isSupported()) return; // hide button, do nothing
-  btnMic.classList.remove('hidden');
-
-  // ── Error tooltip ────────────────────────────────────────────────────────
-  const errorEl = document.createElement('div');
-  errorEl.className = 'voice-error';
-  document.querySelector('.mobile-input-bar').appendChild(errorEl);
-
-  let errorTimer = null;
-  function showVoiceError(msg) {
-    errorEl.textContent = msg;
-    errorEl.classList.add('visible');
-    clearTimeout(errorTimer);
-    errorTimer = setTimeout(() => errorEl.classList.remove('visible'), 4000);
-  }
-
-  // ── Saved prefix: text that was already in the input before dictation ────
-  // Interim results are appended to this prefix while speaking; on final
-  // the prefix is updated so the next utterance continues from there.
-  let savedPrefix = '';
-
-  function setInterimText(text) {
-    mobileInput.value = savedPrefix + text;
-    mobileInput.classList.add('listening');
-  }
-
-  function commitFinalText(text) {
-    const committed = savedPrefix + text;
-    mobileInput.value = committed;
-    savedPrefix = committed;           // next utterance will append
-    mobileInput.classList.remove('listening');
-  }
-
-  function resetListeningState() {
-    mobileInput.classList.remove('listening');
-    btnMic.classList.remove('recording');
-  }
-
-  // ── VoiceInput callbacks ─────────────────────────────────────────────────
-  voice.onStart = () => {
-    savedPrefix = mobileInput.value;   // preserve any text already typed
-    btnMic.classList.add('recording');
-    errorEl.classList.remove('visible');
-  };
-
-  voice.onInterim = (text) => {
-    setInterimText(text);
-  };
-
-  voice.onFinal = (text) => {
-    commitFinalText(text);
-  };
-
-  voice.onEnd = () => {
-    resetListeningState();
-    // If content was added, focus the input so user can review / edit / send
-    if (mobileInput.value) mobileInput.focus();
-  };
-
-  voice.onError = (msg) => {
-    resetListeningState();
-    // On permission error, also restore original text (discard any interim)
-    mobileInput.value = savedPrefix;
-    showVoiceError(msg);
-  };
-
-  // ── Mic button click ─────────────────────────────────────────────────────
-  btnMic.addEventListener('click', () => {
-    if (voice.isActive()) {
-      // Manual stop: discard interim text, keep only committed prefix
-      mobileInput.value = savedPrefix;
-      mobileInput.classList.remove('listening');
-      voice.stop();
-    } else {
-      voice.start();
-    }
-  });
-
-  // ── Stop recording when page goes to background (mobile) ─────────────────
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && voice.isActive()) {
-      mobileInput.value = savedPrefix; // discard incomplete interim
-      voice.stop();
-    }
-  });
-
-  // ── Stop recording on WebSocket disconnect ───────────────────────────────
-  // Monitor the status dot class; if the connection drops while recording,
-  // stop cleanly and restore the committed text.
-  new MutationObserver(() => {
-    if (statusDot.classList.contains('disconnected') && voice.isActive()) {
-      mobileInput.value = savedPrefix;
-      voice.stop();
-    }
-  }).observe(statusDot, { attributes: true, attributeFilter: ['class'] });
-})();
+// Voice input setup removed as redundant
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', initTerminal);

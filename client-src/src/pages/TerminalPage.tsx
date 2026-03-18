@@ -9,7 +9,7 @@ import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
 import { Button, Spinner, StatusDot } from '@/components'
 import { useTheme } from '@/hooks/useTheme'
-import { useVoice } from '@/hooks/useVoice'
+// import { useVoice } from '@/hooks/useVoice' // Removed redundant voice input
 import type { ConnectionState } from '@/types/common'
 import styles from './TerminalPage.module.css'
 
@@ -76,7 +76,7 @@ export function TerminalPage() {
   const [drawerLoading,setDrawerLoading]= useState(false)
   const [drawerError,  setDrawerError]  = useState('')
   const [searchQuery,  setSearchQuery]  = useState('')
-  const [inputValue,   setInputValue]   = useState('')
+  // const [inputValue,   setInputValue]   = useState('') // Removed redundant input
   const [isActivity,   setIsActivity]   = useState(false)
 
   // ── Refs ───────────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ export function TerminalPage() {
   const pathStackRef      = useRef<string[]>([])
   const termPageRef       = useRef<HTMLDivElement>(null)
   const activityTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const inputValueRef     = useRef('')
+  // const inputValueRef     = useRef('')
   const connStateRef      = useRef<ConnectionState>('connecting')
 
   // Keep inputValueRef in sync
@@ -102,7 +102,7 @@ export function TerminalPage() {
   // ── Hooks ──────────────────────────────────────────────────────────────────
 
   const { isDark, apply: applyTheme } = useTheme()
-  const voice = useVoice(inputValueRef, setInputValue)
+  // const voice = useVoice(inputValueRef, setInputValue) // Removed voice
 
   // ── Core functions (stable refs to avoid stale closures) ──────────────────
 
@@ -300,43 +300,12 @@ export function TerminalPage() {
     return () => document.removeEventListener('keydown', handler)
   }, [sendToWs])
 
-  // Stop voice when disconnected
-  useEffect(() => {
-    if (connState === 'disconnected') voice.stop()
-  }, [connState, voice.stop])
-
   // Stop voice when page goes background
-  useEffect(() => {
-    const handler = () => { if (document.hidden) voice.stop() }
-    document.addEventListener('visibilitychange', handler)
-    return () => document.removeEventListener('visibilitychange', handler)
-  }, [voice.stop])
+  /* Removed voice cleanup listeners */
 
   // ── Input handlers ─────────────────────────────────────────────────────────
 
-  const sendInputLine = useCallback(() => {
-    const text = inputValueRef.current
-    if (!text) return
-    sendToWs(text + '\r')
-    setInputValue('')
-  }, [sendToWs])
-
-  const handleInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') { e.preventDefault(); sendInputLine() }
-  }
-
-  const handleInputPaste = (e: ClipboardEvent<HTMLInputElement>) => {
-    const pasted = e.clipboardData?.getData('text')
-    if (pasted) {
-      e.preventDefault()
-      sendToWs(pasted)
-    } else {
-      setTimeout(() => {
-        const val = inputValueRef.current
-        if (val) { sendToWs(val); setInputValue('') }
-      }, 0)
-    }
-  }
+  // Input handlers removed as redundant
 
   // ── Toolbar actions ────────────────────────────────────────────────────────
 
@@ -406,7 +375,7 @@ export function TerminalPage() {
       loadDrawerPath(newPath)
     } else {
       const fullPath = drawerPath ? `${drawerPath}/${entry.name}` : entry.name
-      setInputValue(prev => (prev ? prev + ' ' : '') + fullPath)
+      sendToWs(fullPath) // Send directly to PTY instead of populating input field
       closeDrawer()
     }
   }
@@ -459,38 +428,7 @@ export function TerminalPage() {
         )}
       </div>
 
-      {/* Mobile input bar */}
-      <div className={styles.inputBar}>
-        <input
-          type="text"
-          data-mobile-input
-          className={[styles.inputField, voice.isListening ? styles.listening : ''].filter(Boolean).join(' ')}
-          value={inputValue}
-          onChange={e => setInputValue(e.target.value)}
-          onKeyDown={handleInputKeyDown}
-          onPaste={handleInputPaste}
-          placeholder="Type a command…"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="none"
-          spellCheck={false}
-          enterKeyHint="send"
-        />
-        {voice.isSupported && (
-          <Button
-            variant="secondary"
-            recording={voice.isRecording}
-            className={styles.micBtn}
-            title="Voice input"
-            aria-label={voice.isRecording ? 'Stop voice input' : 'Start voice input'}
-            onClick={voice.toggle}
-          >🎤</Button>
-        )}
-        <button className={styles.sendBtn} onClick={sendInputLine}>Send</button>
-        {voice.error && (
-          <div className={[styles.voiceError, styles.voiceErrorVisible].join(' ')}>{voice.error}</div>
-        )}
-      </div>
+      {/* Mobile input bar removed as redundant */}
 
       {/* Toolbar */}
       <div className={styles.toolbar}>
