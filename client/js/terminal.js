@@ -312,29 +312,6 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ─── Swipe-up gesture to open file drawer ────────────────────────────────────
-(function setupSwipeGesture() {
-  const wrapper = document.querySelector('.terminal-wrapper');
-  let touchStartClientY = 0;
-  let touchStartFraction = 0;
-
-  wrapper.addEventListener('touchstart', (e) => {
-    touchStartClientY = e.touches[0].clientY;
-    const rect = wrapper.getBoundingClientRect();
-    touchStartFraction = (touchStartClientY - rect.top) / rect.height;
-  }, { passive: true });
-
-  wrapper.addEventListener('touchend', (e) => {
-    // Only trigger from the bottom 25% of the terminal area
-    if (touchStartFraction < 0.75) return;
-    const deltaY = touchStartClientY - e.changedTouches[0].clientY;
-    if (deltaY > 40) {
-      e.preventDefault(); // Prevent the subsequent 'click' from closing the drawer
-      openDrawer();
-    }
-  }, { passive: false });
-})();
-
 // ─── Toolbar buttons ──────────────────────────────────────────────────────────
 reconnectBtn.addEventListener('click', () => {
   if (reconnectTimer) clearTimeout(reconnectTimer);
