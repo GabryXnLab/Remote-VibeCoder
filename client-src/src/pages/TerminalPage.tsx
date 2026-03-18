@@ -255,27 +255,6 @@ export function TerminalPage() {
     const onOrient = () => setTimeout(fitAndResize, 300)
     window.addEventListener('orientationchange', onOrient)
 
-    // Swipe-up gesture (bottom 25% → open drawer)
-    let touchStartY = 0
-    let touchStartFraction = 0
-    const onTouchStart = (e: TouchEvent) => {
-      touchStartY = e.touches[0].clientY
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      touchStartFraction = (touchStartY - rect.top) / rect.height
-    }
-    const onTouchEnd = (e: TouchEvent) => {
-      if (touchStartFraction < 0.75) return
-      const delta = touchStartY - e.changedTouches[0].clientY
-      if (delta > 40) {
-        e.preventDefault()
-        openDrawer()
-      }
-    }
-    if (wrapper) {
-      wrapper.addEventListener('touchstart', onTouchStart, { passive: true })
-      wrapper.addEventListener('touchend',   onTouchEnd,   { passive: false })
-    }
-
     // Boot: fit → connect
     requestAnimationFrame(() => {
       fitAddon.fit()
@@ -293,10 +272,6 @@ export function TerminalPage() {
       ro?.disconnect()
       vpCleanup?.()
       window.removeEventListener('orientationchange', onOrient)
-      if (wrapper) {
-        wrapper.removeEventListener('touchstart', onTouchStart)
-        wrapper.removeEventListener('touchend',   onTouchEnd)
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]) // run once when repo is known
