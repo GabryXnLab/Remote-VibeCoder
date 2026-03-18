@@ -36,3 +36,6 @@ export type { CheckboxProps } from './forms/Checkbox'
 
 export { Alert }       from './feedback/Alert'
 export type { AlertVariant, AlertProps } from './feedback/Alert'
+
+export { ConflictWarningDialog } from './feedback/ConflictWarningDialog'
+export type { ConflictContext, ConflictWarningDialogProps } from './feedback/ConflictWarningDialog'

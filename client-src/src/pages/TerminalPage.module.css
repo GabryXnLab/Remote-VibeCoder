@@ -228,9 +228,65 @@
   animation: micPulse 1.2s ease-in-out infinite;
 }
 
+.micBtnPending {
+  background: var(--bg-panel) !important;
+  border-color: var(--accent-orange) !important;
+  color: var(--accent-orange) !important;
+  animation: micPulsePending 1s ease-in-out infinite;
+}
+
+.micSpinner {
+  animation: spinnerRotate 0.9s linear infinite;
+}
+
 @keyframes micPulse {
   0%, 100% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25); }
   50%       { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.10); }
+}
+
+@keyframes micPulsePending {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+@keyframes spinnerRotate {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Listening overlay ── */
+.voiceListening {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 10px;
+  right: 10px;
+  background: rgba(26, 26, 26, 0.92);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 9px 14px;
+  border-radius: 8px;
+  z-index: 50;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: toastIn 0.15s ease-out;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 96px;
+  overflow: hidden;
+}
+
+.voiceListeningDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+  animation: micPulse 1s ease-in-out infinite;
 }
 
 /* ── Voice error toast ── */

@@ -11,10 +11,11 @@ export class VoiceInput {
   private _active = false
   private _rec: SpeechRecognition | null = null
 
-  onFinal: (text: string) => void = () => { /* noop */ }
-  onStart: ()             => void = () => { /* noop */ }
-  onEnd:   ()             => void = () => { /* noop */ }
-  onError: (msg: string)  => void = () => { /* noop */ }
+  onFinal:   (text: string) => void = () => { /* noop */ }
+  onInterim: (text: string) => void = () => { /* noop */ }
+  onStart:   ()             => void = () => { /* noop */ }
+  onEnd:     ()             => void = () => { /* noop */ }
+  onError:   (msg: string)  => void = () => { /* noop */ }
 
   isSupported(): boolean {
     return !!(
@@ -38,9 +39,9 @@ export class VoiceInput {
     const rec = new SR()
     this._rec = rec
 
-    rec.lang            = navigator.language || 'en-US'
-    rec.continuous      = false  // one utterance; more stable on mobile
-    rec.interimResults  = false  // final-only: cleaner for PTY insertion
+    rec.lang            = navigator.language || 'it-IT'
+    rec.continuous      = true   // keep listening until explicit stop
+    rec.interimResults  = true   // live partial results for feedback
     rec.maxAlternatives = 1
 
     rec.onstart = () => {
@@ -49,12 +50,17 @@ export class VoiceInput {
     }
 
     rec.onresult = (e: SpeechRecognitionEvent) => {
+      let interim = ''
       for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i][0].transcript
         if (e.results[i].isFinal) {
-          const text = e.results[i][0].transcript.trim()
-          if (text) this.onFinal(text)
+          const trimmed = text.trim()
+          if (trimmed) this.onFinal(trimmed)
+        } else {
+          interim += text
         }
       }
+      if (interim.trim()) this.onInterim(interim.trim())
     }
 
     rec.onend = () => {

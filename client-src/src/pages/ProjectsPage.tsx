@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, type ChangeEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button, Badge, Spinner, Header, Section,
   Modal, Textarea, Alert, Checkbox,
+  ConflictWarningDialog, type ConflictContext,
 } from '@/components'
 import { colors } from '@/styles/tokens'
 import styles from './ProjectsPage.module.css'
@@ -35,23 +36,31 @@ interface GitStatus {
   branch:      string
   ahead:       number
   behind:      number
-  tracking:    boolean
+  tracking:    string | null
   authorName:  string
   authorEmail: string
   files:       GitFile[]
 }
 
-interface RepoWithGit extends Repo {
-  gitStatus?: GitStatus
+interface SyncStatus {
+  synced:       boolean
+  localChanges: boolean
+  ahead:        number
+  behind:       number
+  branch:       string
+  tracking:     string | null
+  files:        GitFile[]
+}
+
+type SyncState = 'loading' | 'synced' | 'local-changes' | 'behind' | 'diverged' | 'unknown'
+
+interface RepoWithSync extends Repo {
+  gitStatus?:  GitStatus
+  syncStatus?: SyncStatus
+  syncState?:  SyncState
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function escHtml(str: string): string {
-  return String(str || '').replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c] ?? c))
-}
 
 function formatDate(iso: string): string {
   if (!iso) return ''
@@ -75,12 +84,29 @@ function fileStatusInfo(f: GitFile): { label: string; colors: { bg: string; text
   return { label: key, colors: colors.fileStatus[key] }
 }
 
+function computeSyncState(ss: SyncStatus): SyncState {
+  if (ss.localChanges && ss.behind > 0) return 'diverged'
+  if (ss.localChanges || ss.ahead > 0)  return 'local-changes'
+  if (ss.behind > 0)                    return 'behind'
+  if (ss.synced)                        return 'synced'
+  return 'unknown'
+}
+
+const SYNC_DISPLAY: Record<SyncState, { label: string; color: string }> = {
+  'loading':       { label: '...',             color: 'var(--text-dim)' },
+  'synced':        { label: 'Synced',          color: '#4caf50' },
+  'local-changes': { label: 'Local changes',   color: '#e8d44d' },
+  'behind':        { label: 'Updates available', color: '#5db8e8' },
+  'diverged':      { label: 'Diverged',        color: '#e8a85d' },
+  'unknown':       { label: 'Unknown',         color: 'var(--text-dim)' },
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ProjectsPage() {
   const navigate = useNavigate()
 
-  const [repos,    setRepos]    = useState<RepoWithGit[]>([])
+  const [repos,    setRepos]    = useState<RepoWithSync[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState('')
@@ -96,6 +122,19 @@ export function ProjectsPage() {
   const [selectedFiles,     setSelectedFiles]     = useState<string[]>([])
   const [commitLoading,     setCommitLoading]     = useState(false)
   const [commitError,       setCommitError]       = useState('')
+
+  // Conflict dialog
+  const [conflictOpen,    setConflictOpen]    = useState(false)
+  const [conflictContext,  setConflictContext]  = useState<ConflictContext | null>(null)
+  const [conflictLoading, setConflictLoading] = useState(false)
+
+  // Post-commit auto-pull tracking
+  const [pendingPullRepo, setPendingPullRepo] = useState<string | null>(null)
+
+  // Sync polling
+  const reposRef = useRef<RepoWithSync[]>([])
+  reposRef.current = repos
+  const syncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── Auth guard ──────────────────────────────────────────────────────────────
 
@@ -127,8 +166,9 @@ export function ProjectsPage() {
       setSessions(rawSessions)
       setRepos(rawRepos)
 
-      // Non-blocking git status enrichment
+      // Non-blocking enrichment
       loadGitStatuses(rawRepos, new Set(rawSessions.map(s => s.name)))
+      loadSyncStatuses(rawRepos)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
@@ -137,6 +177,8 @@ export function ProjectsPage() {
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  // ── Git status enrichment (for commit file counts) ──────────────────────────
 
   async function loadGitStatuses(rawRepos: Repo[], activeSessions: Set<string>) {
     const candidates = rawRepos.filter(
@@ -154,6 +196,52 @@ export function ProjectsPage() {
       } catch { /* non-critical */ }
     }))
   }
+
+  // ── Sync status polling ─────────────────────────────────────────────────────
+
+  async function loadSyncStatuses(rawRepos: Repo[]) {
+    const cloned = rawRepos.filter(r => r.cloned && !r.archived)
+    if (cloned.length === 0) return
+
+    // Mark all as loading
+    setRepos(prev => prev.map(r =>
+      r.cloned && !r.archived ? { ...r, syncState: 'loading' as SyncState } : r
+    ))
+
+    // Sequential with small delay to not overload the VM
+    for (const repo of cloned) {
+      try {
+        const res = await fetch(`/api/repos/${encodeURIComponent(repo.name)}/sync-status`)
+        if (!res.ok) {
+          setRepos(prev => prev.map(r =>
+            r.name === repo.name ? { ...r, syncState: 'unknown' as SyncState } : r
+          ))
+          continue
+        }
+        const ss = await res.json() as SyncStatus
+        const state = computeSyncState(ss)
+        setRepos(prev => prev.map(r =>
+          r.name === repo.name ? { ...r, syncStatus: ss, syncState: state } : r
+        ))
+      } catch {
+        setRepos(prev => prev.map(r =>
+          r.name === repo.name ? { ...r, syncState: 'unknown' as SyncState } : r
+        ))
+      }
+      // 200ms pause between repos
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+
+  // Polling every 60s
+  useEffect(() => {
+    syncTimerRef.current = setInterval(() => {
+      loadSyncStatuses(reposRef.current)
+    }, 60000)
+    return () => {
+      if (syncTimerRef.current) clearInterval(syncTimerRef.current)
+    }
+  }, [])
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
@@ -188,11 +276,34 @@ export function ProjectsPage() {
     }
   }
 
+  // ── Pre-check pull ──────────────────────────────────────────────────────────
+
   async function handlePull(repo: string, btn: HTMLButtonElement) {
     const orig = btn.textContent ?? ''
     btn.disabled = true
-    btn.textContent = '…'
+    btn.textContent = '...'
     try {
+      // Step 1: check sync status
+      const checkRes = await fetch(`/api/repos/${encodeURIComponent(repo)}/sync-status`)
+      if (!checkRes.ok) throw new Error('Failed to check sync status')
+      const ss = await checkRes.json() as SyncStatus
+
+      // Step 2: if local changes exist, show conflict dialog
+      if (ss.localChanges || ss.ahead > 0) {
+        setConflictContext({
+          repoName: repo,
+          branch:   ss.branch,
+          ahead:    ss.ahead,
+          behind:   ss.behind,
+          files:    ss.files,
+        })
+        setConflictOpen(true)
+        btn.disabled = false
+        btn.textContent = orig
+        return
+      }
+
+      // Step 3: clean state — pull directly
       const res = await fetch('/api/repos/pull', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,10 +315,54 @@ export function ProjectsPage() {
       }
       btn.textContent = '✓'
       setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
+      await loadAll()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Pull failed')
       btn.disabled = false
       btn.textContent = orig
+    }
+  }
+
+  // Conflict dialog handlers
+
+  async function handleForceOverwrite() {
+    if (!conflictContext) return
+    setConflictLoading(true)
+    try {
+      const res = await fetch('/api/repos/force-pull', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ name: conflictContext.repoName }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(d.error ?? 'Force pull failed')
+      }
+      setConflictOpen(false)
+      setConflictContext(null)
+      await loadAll()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Force pull failed')
+    } finally {
+      setConflictLoading(false)
+    }
+  }
+
+  async function handleCommitFirst() {
+    if (!conflictContext) return
+    const repo = conflictContext.repoName
+    setConflictOpen(false)
+    setPendingPullRepo(repo)
+
+    // Load full git-status and open commit modal
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/git-status`)
+      if (!res.ok) throw new Error('Failed to load git status')
+      const status = await res.json() as GitStatus
+      openCommitModal(repo, status)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load status')
+      setPendingPullRepo(null)
     }
   }
 
@@ -257,6 +412,21 @@ export function ProjectsPage() {
     setCommitOpen(true)
   }
 
+  async function openCommitModalForRepo(repo: string) {
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/git-status`)
+      if (!res.ok) throw new Error('Failed to load git status')
+      const status = await res.json() as GitStatus
+      if (status.files.length === 0) {
+        setError('No changes to commit')
+        return
+      }
+      openCommitModal(repo, status)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load status')
+    }
+  }
+
   function closeCommitModal() {
     setCommitOpen(false)
     setCommitRepo('')
@@ -301,6 +471,25 @@ export function ProjectsPage() {
       if (!res.ok) throw new Error(data.error ?? `Commit failed (${res.status})`)
 
       closeCommitModal()
+
+      // If this commit was triggered from conflict dialog, auto-pull after
+      if (pendingPullRepo === commitRepo) {
+        setPendingPullRepo(null)
+        try {
+          const pullRes = await fetch('/api/repos/pull', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ name: commitRepo }),
+          })
+          if (!pullRes.ok) {
+            const pd = await pullRes.json().catch(() => ({})) as { error?: string }
+            setError(pd.error ?? 'Auto-pull after commit failed')
+          }
+        } catch (pullErr) {
+          setError(pullErr instanceof Error ? pullErr.message : 'Auto-pull failed')
+        }
+      }
+
       await loadAll()
     } catch (err) {
       setCommitError(err instanceof Error ? err.message : 'Commit failed')
@@ -313,9 +502,23 @@ export function ProjectsPage() {
 
   const activeSessions = new Set(sessions.map(s => s.name))
 
+  // ── Sync indicator renderer ────────────────────────────────────────────────
+
+  const renderSyncIndicator = (repo: RepoWithSync) => {
+    if (!repo.cloned || repo.archived) return null
+    const state = repo.syncState || 'unknown'
+    const display = SYNC_DISPLAY[state]
+    return (
+      <span className={styles.syncIndicator}>
+        <span className={styles.syncDot} style={{ background: display.color }} />
+        <span style={{ color: display.color }}>{display.label}</span>
+      </span>
+    )
+  }
+
   // ── Render helpers ───────────────────────────────────────────────────────────
 
-  const repoActions = (repo: RepoWithGit) => {
+  const repoActions = (repo: RepoWithSync) => {
     const sessionName = `claude-${repo.name}`
     const hasSession  = activeSessions.has(sessionName)
 
@@ -330,24 +533,25 @@ export function ProjectsPage() {
           >Attach</Button>
         )
       }
+      const changeCount = repo.gitStatus?.files.length ?? repo.syncStatus?.files.length ?? 0
       return (
-        <>
+        <div className={styles.actionRow}>
           <Button variant="primary" size="sm"
             onClick={e => handleOpen(repo.name, e.currentTarget as HTMLButtonElement, true)}
           >Open</Button>
           <Button variant="secondary" size="sm"
-            title="git pull"
+            title="git pull (with conflict check)"
             onClick={e => handlePull(repo.name, e.currentTarget as HTMLButtonElement)}
-          >↓</Button>
-          {repo.gitStatus && (
+          >↓ Pull</Button>
+          {changeCount > 0 && (
             <Button
               variant="git"
               size="sm"
-              title={`${repo.gitStatus.files.length} uncommitted change${repo.gitStatus.files.length !== 1 ? 's' : ''} — click to commit`}
-              onClick={() => openCommitModal(repo.name, repo.gitStatus!)}
-            >↑ {repo.gitStatus.files.length}</Button>
+              title={`${changeCount} uncommitted change${changeCount !== 1 ? 's' : ''} — click to commit`}
+              onClick={() => openCommitModalForRepo(repo.name)}
+            >↑ {changeCount}</Button>
           )}
-        </>
+        </div>
       )
     }
     return (
@@ -421,25 +625,23 @@ export function ProjectsPage() {
                   ].filter(Boolean).join(' ')}
                 >
                   <div className={styles.repoInfo}>
-                    <div className={styles.repoName}>
-                      {escHtml(repo.name)}{' '}
-                      <Badge variant={repo.private ? 'private' : 'public'}>
-                        {repo.private ? 'Private' : 'Public'}
-                      </Badge>
-                      {repo.archived && <> <Badge variant="archived">Archived</Badge></>}
+                    <div className={styles.repoHeader}>
+                      <div className={styles.repoName}>
+                        <span className={styles.visibilityIcon}>
+                          {repo.private ? '🔒' : '🔓'}
+                        </span>
+                        {repo.name}
+                        <Badge variant={repo.private ? 'private' : 'public'}>
+                          {repo.private ? 'Private' : 'Public'}
+                        </Badge>
+                        {repo.archived && <Badge variant="archived">Archived</Badge>}
+                      </div>
+                      {renderSyncIndicator(repo)}
                     </div>
                     {repo.description && (
-                      <div className={styles.repoDesc}>{escHtml(repo.description)}</div>
+                      <div className={styles.repoDesc}>{repo.description}</div>
                     )}
                     <div className={styles.repoMeta}>
-                      {repo.cloned && (
-                        <span style={{ color: 'var(--accent-orange-light)' }}>✓ cloned</span>
-                      )}
-                      {repo.gitStatus && (
-                        <Badge variant="changes">
-                          {repo.gitStatus.files.length} change{repo.gitStatus.files.length !== 1 ? 's' : ''}
-                        </Badge>
-                      )}
                       <span>{formatDate(repo.updatedAt)}</span>
                     </div>
                   </div>
@@ -450,6 +652,16 @@ export function ProjectsPage() {
           </Section>
         )}
       </main>
+
+      {/* ── Conflict warning dialog ── */}
+      <ConflictWarningDialog
+        open={conflictOpen}
+        context={conflictContext}
+        onClose={() => { setConflictOpen(false); setConflictContext(null) }}
+        onForceOverwrite={handleForceOverwrite}
+        onCommitFirst={handleCommitFirst}
+        loading={conflictLoading}
+      />
 
       {/* ── Commit modal ── */}
       <Modal

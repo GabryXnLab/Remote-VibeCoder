@@ -179,6 +179,99 @@ router.post('/pull', async (req, res) => {
   }
 });
 
+// ─── GET /api/repos/:name/sync-status ─────────────────────────────────────────
+// Fetch from remote + compare local vs remote state
+router.get('/:name/sync-status', async (req, res) => {
+  const { name } = req.params;
+  if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid repo name' });
+  }
+
+  const repoPath = path.join(REPOS_DIR, name);
+  if (!fs.existsSync(repoPath)) {
+    return res.status(404).json({ error: 'Repo not cloned locally' });
+  }
+
+  try {
+    const resolved = fs.realpathSync(repoPath);
+    if (resolved !== repoPath && !resolved.startsWith(REPOS_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    const cfg   = config.get();
+    const token = cfg.githubPat || process.env.GITHUB_PAT;
+
+    // Fetch with credentials and a 10s timeout
+    await withGitCredentials(token, resolved, (git) =>
+      git.timeout({ block: 10000 }).fetch('origin', { '--prune': null })
+    ).catch(err => {
+      console.warn('[repos] sync-status fetch warning:', err.message);
+      // Continue anyway — status will reflect local state
+    });
+
+    const git = simpleGit(resolved);
+    const status = await git.status();
+
+    const localChanges = status.files.length > 0;
+    res.json({
+      synced:       !localChanges && status.ahead === 0 && status.behind === 0,
+      localChanges,
+      ahead:        status.ahead,
+      behind:       status.behind,
+      branch:       status.current,
+      tracking:     status.tracking,
+      files:        status.files.map(f => ({
+        path:        f.path,
+        from:        f.from || null,
+        index:       f.index,
+        working_dir: f.working_dir,
+      })),
+    });
+  } catch (err) {
+    console.error('[repos] sync-status error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/repos/force-pull ───────────────────────────────────────────────
+// Discard local changes and force pull from remote
+router.post('/force-pull', async (req, res) => {
+  const { name } = req.body;
+  if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid repo name' });
+  }
+
+  const repoPath = path.join(REPOS_DIR, name);
+  if (!fs.existsSync(repoPath)) {
+    return res.status(404).json({ error: 'Repo not cloned locally' });
+  }
+
+  try {
+    const resolved = fs.realpathSync(repoPath);
+    if (!resolved.startsWith(REPOS_DIR)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    const cfg   = config.get();
+    const token = cfg.githubPat || process.env.GITHUB_PAT;
+    const git   = simpleGit(resolved);
+
+    // Reset all local changes
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
+
+    // Pull with credentials
+    const result = await withGitCredentials(token, resolved, (credGit) =>
+      credGit.pull()
+    );
+
+    res.json({ ok: true, result });
+  } catch (err) {
+    console.error('[repos] force-pull error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /api/repos/:name/tree ────────────────────────────────────────────────
 router.get('/:name/tree', (req, res) => {
   const { name } = req.params;

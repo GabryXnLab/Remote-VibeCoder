@@ -454,12 +454,22 @@ export function TerminalPage() {
         {/* Mic button — right-aligned, prominent */}
         {voice.isSupported && (
           <button
-            className={[styles.micBtn, voice.isRecording ? styles.micBtnRecording : ''].filter(Boolean).join(' ')}
+            className={[
+              styles.micBtn,
+              voice.isRecording ? styles.micBtnRecording : '',
+              voice.isPending   ? styles.micBtnPending   : '',
+            ].filter(Boolean).join(' ')}
             onClick={voice.toggle}
-            title={voice.isRecording ? 'Stop recording' : 'Voice input'}
+            title={voice.isRecording ? 'Stop (tap to send)' : voice.isPending ? 'Requesting mic…' : 'Voice input'}
             aria-label={voice.isRecording ? 'Stop voice input' : 'Start voice input'}
+            disabled={false}
           >
-            {voice.isRecording ? (
+            {voice.isPending ? (
+              /* Spinner while awaiting permission */
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="16" height="16" className={styles.micSpinner}>
+                <circle cx="12" cy="12" r="9" strokeDasharray="28 56" strokeLinecap="round"/>
+              </svg>
+            ) : voice.isRecording ? (
               <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
                 <rect x="6" y="6" width="12" height="12" rx="2"/>
               </svg>
@@ -480,6 +490,19 @@ export function TerminalPage() {
         {/* Voice error toast */}
         {voice.error && (
           <div className={styles.voiceToast}>{voice.error}</div>
+        )}
+
+        {/* Listening overlay — shown above toolbar while recording */}
+        {(voice.isRecording || voice.isPending) && (
+          <div className={styles.voiceListening}>
+            <span className={styles.voiceListeningDot} />
+            {voice.isPending
+              ? 'Richiesta permesso microfono…'
+              : voice.interimText
+                ? voice.interimText
+                : 'In ascolto…'
+            }
+          </div>
         )}
       </div>
 
