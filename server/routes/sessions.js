@@ -13,6 +13,12 @@ const REPOS_DIR = path.join(os.homedir(), 'repos');
 // Regex: allows the full tmux name including dashes (claude-repo-shortid)
 const SESSION_NAME_RE = /^[a-zA-Z0-9_.-]+$/;
 
+// Allowed shells for safe execution
+const ALLOWED_SHELLS = new Set([
+  '/bin/bash', '/bin/sh', '/bin/zsh',
+  '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish',
+]);
+
 // ─── In-memory metadata ───────────────────────────────────────────────────────
 // Key = tmux session name (e.g. "claude-myrepo-ab1c2d")
 // Value = { label, repo, mode, created }
@@ -143,7 +149,6 @@ router.post('/_free', async (req, res) => {
   const id       = shortId();
   const tmuxName = `claude-_free-${id}`;
 
-  const ALLOWED_SHELLS = new Set(['/bin/bash', '/bin/sh', '/bin/zsh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish']);
   const rawShell  = process.env.SHELL || '/bin/bash';
   const safeShell = ALLOWED_SHELLS.has(rawShell) ? rawShell : '/bin/bash';
 
@@ -193,11 +198,21 @@ router.post('/', async (req, res) => {
     cwd = sub ? path.join(repoPath, sub) : repoPath;
   }
 
+  // Path traversal guard
+  try {
+    const resolved = fs.realpathSync(cwd);
+    if (!resolved.startsWith(repoPath + path.sep) && resolved !== repoPath) {
+      return res.status(400).json({ error: 'Invalid working directory' });
+    }
+  } catch (_) {
+    // Directory doesn't exist yet — fall back to repoPath
+    cwd = repoPath;
+  }
+
   const id         = shortId();
   const tmuxName   = `claude-${repo}-${id}`;
   const startLabel = label || `${repo} #${id}`;
 
-  const ALLOWED_SHELLS = new Set(['/bin/bash', '/bin/sh', '/bin/zsh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish']);
   const rawShell   = process.env.SHELL || '/bin/bash';
   const safeShell  = ALLOWED_SHELLS.has(rawShell) ? rawShell : '/bin/bash';
   const startCmd   = mode === 'shell' ? safeShell : 'claude';
@@ -230,8 +245,19 @@ router.patch('/:sessionId', async (req, res) => {
   if (!label || typeof label !== 'string') {
     return res.status(400).json({ error: 'label is required' });
   }
+  // Sanitize label: strip control chars, cap at 80 chars
+  const safeLabel = label.replace(/[\x00-\x1f]/g, '').slice(0, 80);
+  if (!safeLabel) return res.status(400).json({ error: 'label is empty after sanitization' });
+
+  // Verify session exists
+  try {
+    await runTmux(['has-session', '-t', sessionId]);
+  } catch (_) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
   const meta = sessionMeta.get(sessionId) || {};
-  sessionMeta.set(sessionId, { ...meta, label });
+  sessionMeta.set(sessionId, { ...meta, label: safeLabel });
   res.json({ ok: true });
 });
 
@@ -283,7 +309,6 @@ router.post('/:repo', async (req, res) => {
   }
 
   const shellMode = req.query.shell === 'true';
-  const ALLOWED_SHELLS = new Set(['/bin/bash', '/bin/sh', '/bin/zsh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish']);
   const rawShell  = process.env.SHELL || '/bin/bash';
   const safeShell = ALLOWED_SHELLS.has(rawShell) ? rawShell : '/bin/bash';
   const startCmd  = shellMode ? safeShell : 'claude';
