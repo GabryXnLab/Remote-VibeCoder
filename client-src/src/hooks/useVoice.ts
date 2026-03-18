@@ -1,93 +1,54 @@
-import { useState, useEffect, useRef, useCallback, type RefObject } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { VoiceInput } from '@/utils/VoiceInput'
 
 export interface VoiceState {
   isSupported: boolean
   isRecording: boolean
-  isListening: boolean
   error:       string
   toggle:      () => void
-  stop:        () => void
 }
 
-export function useVoice(
-  valueRef: RefObject<string>,
-  setValue: (v: string) => void,
-): VoiceState {
-  const [isSupported, setIsSupported] = useState(false)
+/**
+ * Hook that wires VoiceInput to the terminal.
+ * `onFinal` receives the recognised text and should forward it to the PTY.
+ */
+export function useVoice(onFinal: (text: string) => void): VoiceState {
   const [isRecording, setIsRecording] = useState(false)
-  const [isListening, setIsListening] = useState(false)
   const [error,       setError]       = useState('')
+  const [isSupported, setIsSupported] = useState(false)
 
-  const voiceRef       = useRef<VoiceInput | null>(null)
-  const savedPrefixRef = useRef('')
-  const errorTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Stable ref to setValue to avoid stale closures in the effect
-  const setValueRef    = useRef(setValue)
-  useEffect(() => { setValueRef.current = setValue })
+  const voiceRef      = useRef<VoiceInput | null>(null)
+  const onFinalRef    = useRef(onFinal)
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Keep onFinalRef in sync so callbacks always use the latest closure
+  useEffect(() => { onFinalRef.current = onFinal })
 
   useEffect(() => {
     const voice = new VoiceInput()
     voiceRef.current = voice
     setIsSupported(voice.isSupported())
-    if (!voice.isSupported()) return
 
-    voice.onStart = () => {
-      savedPrefixRef.current = valueRef.current ?? ''
-      setIsRecording(true)
-      setError('')
-    }
-
-    voice.onInterim = (text) => {
-      setValueRef.current(savedPrefixRef.current + text)
-      setIsListening(true)
-    }
-
-    voice.onFinal = (text) => {
-      const committed = savedPrefixRef.current + text
-      setValueRef.current(committed)
-      savedPrefixRef.current = committed
-      setIsListening(false)
-    }
-
-    voice.onEnd = () => {
-      setIsRecording(false)
-      setIsListening(false)
-    }
-
+    voice.onStart = () => { setIsRecording(true); setError('') }
+    voice.onFinal = (text) => { onFinalRef.current(text) }
+    voice.onEnd   = () => { setIsRecording(false) }
     voice.onError = (msg) => {
       setIsRecording(false)
-      setIsListening(false)
-      setValueRef.current(savedPrefixRef.current)
       setError(msg)
       if (errorTimerRef.current) clearTimeout(errorTimerRef.current)
-      errorTimerRef.current = setTimeout(() => setError(''), 4000)
+      errorTimerRef.current = setTimeout(() => setError(''), 5000)
     }
 
     return () => {
-      if (voice.isActive()) voice.stop()
+      voice.stop()
       if (errorTimerRef.current) clearTimeout(errorTimerRef.current)
     }
-  }, []) // run once — valueRef and setValueRef are stable refs
+  }, []) // run once — voice instance is stable
 
-  const toggle = useCallback(() => {
-    const v = voiceRef.current
-    if (!v) return
-    if (v.isActive()) {
-      setValueRef.current(savedPrefixRef.current)
-      setIsListening(false)
-      v.stop()
-    } else {
-      v.start()
-    }
-  }, [])
+  // toggle() is called directly inside a click handler, so VoiceInput.start()
+  // executes synchronously within the user gesture.  Do NOT wrap in async/await
+  // or setTimeout, which would break mobile permission checks.
+  const toggle = useCallback(() => voiceRef.current?.toggle(), [])
 
-  const stop = useCallback(() => {
-    const v = voiceRef.current
-    if (!v || !v.isActive()) return
-    setValueRef.current(savedPrefixRef.current)
-    v.stop()
-  }, [])
-
-  return { isSupported, isRecording, isListening, error, toggle, stop }
+  return { isSupported, isRecording, error, toggle }
 }

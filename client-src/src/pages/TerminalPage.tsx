@@ -8,7 +8,7 @@ import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
 import { Button, Spinner, StatusDot } from '@/components'
 import { useTheme } from '@/hooks/useTheme'
-// import { useVoice } from '@/hooks/useVoice' // Removed redundant voice input
+import { useVoice } from '@/hooks/useVoice'
 import type { ConnectionState } from '@/types/common'
 import styles from './TerminalPage.module.css'
 
@@ -99,7 +99,6 @@ export function TerminalPage() {
   // ── Hooks ──────────────────────────────────────────────────────────────────
 
   const { isDark, apply: applyTheme } = useTheme()
-  // const voice = useVoice(inputValueRef, setInputValue) // Removed voice
 
   // ── Core functions (stable refs to avoid stale closures) ──────────────────
 
@@ -304,6 +303,10 @@ export function TerminalPage() {
 
   // Input handlers removed as redundant
 
+  // ── Voice input ────────────────────────────────────────────────────────────
+  // onFinal sends recognized text directly to PTY (no newline — user can review)
+  const voice = useVoice(useCallback((text: string) => sendToWs(text), [sendToWs]))
+
   // ── Toolbar actions ────────────────────────────────────────────────────────
 
   const handleReconnectNow = () => {
@@ -425,25 +428,59 @@ export function TerminalPage() {
         )}
       </div>
 
-      {/* Mobile input bar removed as redundant */}
-
       {/* Toolbar */}
       <div className={styles.toolbar}>
-        <Button variant="toolbar" onClick={() => sendToWs('\r')}>↵</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\x03')}>Ctrl+C</Button>
+
+        {/* Group 1 — Text control */}
+        <Button variant="toolbar" className={styles.tbEnter} onClick={() => sendToWs('\r')}>↵</Button>
+        <Button variant="toolbar" onClick={() => sendToWs('\x03')}>^C</Button>
         <Button variant="toolbar" onClick={() => sendToWs('\t')}>Tab</Button>
         <Button variant="toolbar" onClick={() => sendToWs('\x1b')}>Esc</Button>
+
+        <span className={styles.tbSep} />
+
+        {/* Group 2 — Arrow keys */}
         <Button variant="toolbar" onClick={() => sendToWs('\x1b[A')}>↑</Button>
         <Button variant="toolbar" onClick={() => sendToWs('\x1b[B')}>↓</Button>
         <Button variant="toolbar" onClick={() => sendToWs('\x1b[D')}>←</Button>
         <Button variant="toolbar" onClick={() => sendToWs('\x1b[C')}>→</Button>
-        <Button variant="toolbar" onClick={() => termRef.current?.scrollToBottom()}>⬇ End</Button>
-        <Button variant="toolbar" onClick={handleRefresh}>Refresh</Button>
+
+        <span className={styles.tbSep} />
+
+        {/* Group 3 — Utility */}
+        <Button variant="toolbar" onClick={() => termRef.current?.scrollToBottom()}>⬇</Button>
+        <Button variant="toolbar" onClick={handleRefresh}>↺</Button>
+
+        {/* Mic button — right-aligned, prominent */}
+        {voice.isSupported && (
+          <button
+            className={[styles.micBtn, voice.isRecording ? styles.micBtnRecording : ''].filter(Boolean).join(' ')}
+            onClick={voice.toggle}
+            title={voice.isRecording ? 'Stop recording' : 'Voice input'}
+            aria-label={voice.isRecording ? 'Stop voice input' : 'Start voice input'}
+          >
+            {voice.isRecording ? (
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm-1 18.93V21h2v-1.07A8 8 0 0 0 20 12h-2a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93z"/>
+              </svg>
+            )}
+          </button>
+        )}
+
         <Button
           variant="toolbar"
           onClick={handleKillSession}
-          style={{ marginLeft: 'auto', color: 'var(--danger)', borderColor: 'var(--danger)' }}
+          style={{ marginLeft: voice.isSupported ? undefined : 'auto', flexShrink: 0, color: 'var(--danger)', borderColor: 'var(--danger)' }}
         >Kill</Button>
+
+        {/* Voice error toast */}
+        {voice.error && (
+          <div className={styles.voiceToast}>{voice.error}</div>
+        )}
       </div>
 
       {/* File drawer */}

@@ -1,101 +1,100 @@
-interface VoiceInputOptions {
-  lang?: string
-}
+/**
+ * VoiceInput — thin wrapper around Web Speech API.
+ *
+ * Key design decision: a **fresh** SpeechRecognition instance is created on
+ * every `start()` call.  Reusing the same instance across multiple start/stop
+ * cycles is unreliable on mobile Chrome/Safari and is the most common cause of
+ * spurious "not-allowed" errors even after the user has granted mic permission.
+ */
 
 export class VoiceInput {
-  private _supported: boolean
+  private _active = false
   private _rec: SpeechRecognition | null = null
-  private _active  = false
-  private _restart = false
-  private _restartCount = 0
-  private readonly MAX_RESTARTS = 3
 
-  onInterim: (text: string) => void = () => { /* noop */ }
-  onFinal:   (text: string) => void = () => { /* noop */ }
-  onStart:   ()             => void = () => { /* noop */ }
-  onEnd:     ()             => void = () => { /* noop */ }
-  onError:   (msg: string)  => void = () => { /* noop */ }
+  onFinal: (text: string) => void = () => { /* noop */ }
+  onStart: ()             => void = () => { /* noop */ }
+  onEnd:   ()             => void = () => { /* noop */ }
+  onError: (msg: string)  => void = () => { /* noop */ }
 
-  constructor(opts: VoiceInputOptions = {}) {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-    this._supported = !!SR
-    if (!this._supported || !SR) return
+  isSupported(): boolean {
+    return !!(
+      (window as typeof window & { SpeechRecognition?: unknown }).SpeechRecognition ||
+      (window as typeof window & { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition
+    )
+  }
 
+  isActive(): boolean { return this._active }
+
+  /** Must be called synchronously inside a user-gesture handler (click/touchend). */
+  start(): void {
+    if (this._active) return
+
+    const SR =
+      (window as typeof window & { SpeechRecognition?: new () => SpeechRecognition }).SpeechRecognition ??
+      (window as typeof window & { webkitSpeechRecognition?: new () => SpeechRecognition }).webkitSpeechRecognition
+    if (!SR) return
+
+    // Fresh instance — avoids "not-allowed" on repeated start() after stop()
     const rec = new SR()
     this._rec = rec
 
-    rec.lang            = opts.lang || navigator.language || 'en-US'
-    rec.continuous      = false
-    rec.interimResults  = true
+    rec.lang            = navigator.language || 'en-US'
+    rec.continuous      = false  // one utterance; more stable on mobile
+    rec.interimResults  = false  // final-only: cleaner for PTY insertion
     rec.maxAlternatives = 1
 
     rec.onstart = () => {
-      this._active  = true
-      this._restart = true
+      this._active = true
       this.onStart()
     }
 
     rec.onresult = (e: SpeechRecognitionEvent) => {
-      let interim = ''
-      let final   = ''
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript
-        if (e.results[i].isFinal) final   += t
-        else                       interim += t
+        if (e.results[i].isFinal) {
+          const text = e.results[i][0].transcript.trim()
+          if (text) this.onFinal(text)
+        }
       }
-      if (interim) this.onInterim(interim)
-      if (final)   this.onFinal(final)
     }
 
     rec.onend = () => {
-      if (this._restart && this._restartCount < this.MAX_RESTARTS) {
-        this._restartCount++
-        try { rec.start() } catch (_) { this._handleEnd() }
-        return
-      }
-      this._handleEnd()
+      this._active = false
+      this._rec    = null
+      this.onEnd()
     }
 
     rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      if (e.error === 'no-speech') return
-      if (e.error === 'aborted')   return
-      this._restart = false
+      // Benign: user didn't speak, or we called stop() ourselves
+      if (e.error === 'no-speech' || e.error === 'aborted') return
+
+      this._active = false
+      this._rec    = null
+
       const MSGS: Record<string, string> = {
-        'not-allowed':         'Accesso al microfono negato. Controlla le impostazioni del browser.',
-        'audio-capture':       'Microfono non trovato o non accessibile.',
-        'network':             'Errore di rete durante il riconoscimento vocale.',
-        'service-not-allowed': 'Servizio vocale non disponibile su questo dispositivo.',
+        'not-allowed':         'Mic access denied. Tap the lock icon in your browser address bar and allow microphone.',
+        'audio-capture':       'Microphone not found or inaccessible.',
+        'network':             'Network error during voice recognition.',
+        'service-not-allowed': 'Voice recognition not available on this device/browser.',
       }
-      this.onError(MSGS[e.error] ?? `Errore riconoscimento vocale: ${e.error}`)
-      this._handleEnd()
+      this.onError(MSGS[e.error] ?? `Voice error: ${e.error}`)
+    }
+
+    try {
+      rec.start()
+    } catch (_) {
+      // start() can throw if called twice or after abort — clean up silently
+      this._active = false
+      this._rec    = null
     }
   }
 
-  isSupported(): boolean { return this._supported }
-  isActive():    boolean { return this._active }
-
-  start(): void {
-    if (!this._supported || this._active || !this._rec) return
-    this._restartCount = 0
-    this._restart      = false
-    try { this._rec.start() } catch (_) { /* noop */ }
-  }
-
   stop(): void {
-    if (!this._supported || !this._rec) return
-    this._restart = false
-    this._active  = false
+    if (!this._rec) return
     try { this._rec.stop() } catch (_) { /* noop */ }
   }
 
   toggle(): void {
     if (this._active) this.stop()
     else              this.start()
-  }
-
-  private _handleEnd(): void {
-    this._active  = false
-    this._restart = false
-    this.onEnd()
   }
 }
