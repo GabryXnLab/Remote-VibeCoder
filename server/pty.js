@@ -56,7 +56,9 @@ function handlePtyUpgrade(ws, req) {
   }
 
   const reposDir = path.join(os.homedir(), 'repos');
-  const shell    = process.env.SHELL || '/bin/bash';
+  const repoPath = path.join(reposDir, rawRepo);
+  // Ensure the repo directory exists; fallback to reposDir if it doesn't
+  const safeCwd  = require('fs').existsSync(repoPath) ? repoPath : reposDir;
 
   let ptyProcess;
   try {
@@ -73,7 +75,7 @@ function handlePtyUpgrade(ws, req) {
       name: 'xterm-256color',
       cols: 220,
       rows: 50,
-      cwd:  reposDir,
+      cwd:  safeCwd,
       env: {
         ...ptyEnv,
         TERM:       'xterm-256color',
