@@ -6,7 +6,7 @@ import { Terminal, type ITheme } from 'xterm'
 import 'xterm/css/xterm.css'
 import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
-import { Button, Spinner, StatusDot } from '@/components'
+import { Button, Spinner, StatusDot, SettingsDropdown } from '@/components'
 import { useTheme } from '@/hooks/useTheme'
 import { useVoice } from '@/hooks/useVoice'
 import type { ConnectionState } from '@/types/common'
@@ -45,6 +45,8 @@ const XTERM_LIGHT: ITheme = {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+type DisplayMode = 'raw' | 'wrap' | 'zoom'
+
 interface FileEntry {
   name: string
   type: 'file' | 'dir'
@@ -75,8 +77,18 @@ export function TerminalPage() {
   const [drawerLoading,setDrawerLoading]= useState(false)
   const [drawerError,  setDrawerError]  = useState('')
   const [searchQuery,  setSearchQuery]  = useState('')
-  // const [inputValue,   setInputValue]   = useState('') // Removed redundant input
   const [isActivity,   setIsActivity]   = useState(false)
+
+  // Settings state (persisted)
+  const [settingsOpen,  setSettingsOpen]  = useState(false)
+  const [showTextarea,  setShowTextarea]  = useState(() =>
+    localStorage.getItem('vibecoder_textarea') === 'true'
+  )
+  const [textareaValue, setTextareaValue] = useState('')
+  const [displayMode,   setDisplayMode]   = useState<DisplayMode>(() =>
+    (localStorage.getItem('vibecoder_display_mode') as DisplayMode | null) ?? 'raw'
+  )
+  const [zoomScale, setZoomScale] = useState(1)
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
@@ -90,11 +102,17 @@ export function TerminalPage() {
   const pathStackRef      = useRef<string[]>([])
   const termPageRef       = useRef<HTMLDivElement>(null)
   const activityTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // const inputValueRef     = useRef('')
   const connStateRef      = useRef<ConnectionState>('connecting')
+  const displayModeRef    = useRef<DisplayMode>(displayMode)
+  const textareaRef       = useRef<HTMLTextAreaElement>(null)
 
-  // Keep connStateRef in sync for closures
-  useEffect(() => { connStateRef.current = connState }, [connState])
+  // Keep refs in sync
+  useEffect(() => { connStateRef.current = connState },       [connState])
+  useEffect(() => { displayModeRef.current = displayMode },   [displayMode])
+
+  // Persist settings to localStorage
+  useEffect(() => { localStorage.setItem('vibecoder_textarea',     String(showTextarea)) }, [showTextarea])
+  useEffect(() => { localStorage.setItem('vibecoder_display_mode', displayMode) },          [displayMode])
 
   // ── Hooks ──────────────────────────────────────────────────────────────────
 
@@ -113,14 +131,35 @@ export function TerminalPage() {
     ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
   }, [])
 
+  // Compute zoom scale from .xterm-screen element width vs wrapper width
+  const updateZoomScale = useCallback(() => {
+    const wrapper = termContainerRef.current?.parentElement
+    const screen  = termContainerRef.current?.querySelector('.xterm-screen') as HTMLElement | null
+    if (!wrapper || !screen) return
+    const wrapperW  = wrapper.clientWidth
+    const contentW  = screen.offsetWidth
+    if (contentW > 0 && wrapperW > 0) {
+      setZoomScale(Math.min(1, wrapperW / contentW))
+    }
+  }, [])
+
   const fitAndResize = useCallback(() => {
+    const mode = displayModeRef.current
     try {
       fitRef.current?.fit()
       const term = termRef.current
-      if (term && term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
+      if (term && mode !== 'wrap') {
+        if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
+      }
       sendResize()
     } catch { /* noop */ }
-  }, [sendResize])
+    // Zoom scale: computed after layout via rAF
+    if (mode === 'zoom') {
+      requestAnimationFrame(updateZoomScale)
+    } else {
+      setZoomScale(1)
+    }
+  }, [sendResize, updateZoomScale])
 
   const onTerminalData = useCallback(() => {
     setIsActivity(true)
@@ -172,6 +211,8 @@ export function TerminalPage() {
       if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data))
       else                                term.write(e.data as string)
       onTerminalData()
+      // Update zoom scale after new content (debounced via rAF)
+      if (displayModeRef.current === 'zoom') requestAnimationFrame(updateZoomScale)
     }
 
     newWs.onclose = (ev: CloseEvent) => {
@@ -184,7 +225,7 @@ export function TerminalPage() {
     newWs.onerror = () => {
       termRef.current?.writeln('\r\n\x1b[31m[WebSocket error — check server logs]\x1b[0m')
     }
-  }, [repo, hideOverlay, sendResize, onTerminalData, scheduleReconnect])
+  }, [repo, hideOverlay, sendResize, onTerminalData, scheduleReconnect, updateZoomScale])
 
   // ── Terminal init + cleanup ────────────────────────────────────────────────
 
@@ -277,13 +318,23 @@ export function TerminalPage() {
     if (termRef.current) termRef.current.options.theme = isDark ? XTERM_DARK : XTERM_LIGHT
   }, [isDark])
 
+  // Re-fit when display mode changes
+  useEffect(() => {
+    requestAnimationFrame(() => fitAndResize())
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayMode])
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'F') { e.preventDefault(); openDrawer() }
       else if (e.ctrlKey && !e.shiftKey && e.key === 'k') {
         e.preventDefault()
-        document.querySelector<HTMLInputElement>('[data-mobile-input]')?.focus()
+        if (showTextarea) {
+          textareaRef.current?.focus()
+        } else {
+          document.querySelector<HTMLInputElement>('[data-mobile-input]')?.focus()
+        }
       }
       else if (e.ctrlKey && !e.shiftKey && e.key === 'l') {
         e.preventDefault()
@@ -294,17 +345,9 @@ export function TerminalPage() {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [sendToWs])
-
-  // Stop voice when page goes background
-  /* Removed voice cleanup listeners */
-
-  // ── Input handlers ─────────────────────────────────────────────────────────
-
-  // Input handlers removed as redundant
+  }, [sendToWs, showTextarea])
 
   // ── Voice input ────────────────────────────────────────────────────────────
-  // onFinal sends recognized text directly to PTY (no newline — user can review)
   const voice = useVoice(useCallback((text: string) => sendToWs(text), [sendToWs]))
 
   // ── Toolbar actions ────────────────────────────────────────────────────────
@@ -328,6 +371,22 @@ export function TerminalPage() {
       await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'DELETE' })
     } catch { /* noop */ }
     navigate('/projects', { replace: true })
+  }
+
+  // ── Textarea send ──────────────────────────────────────────────────────────
+
+  const handleTextareaSend = () => {
+    if (!textareaValue.trim()) return
+    sendToWs(textareaValue + '\r')
+    setTextareaValue('')
+    textareaRef.current?.focus()
+  }
+
+  const handleTextareaKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleTextareaSend()
+    }
   }
 
   // ── File drawer ────────────────────────────────────────────────────────────
@@ -375,7 +434,7 @@ export function TerminalPage() {
       loadDrawerPath(newPath)
     } else {
       const fullPath = drawerPath ? `${drawerPath}/${entry.name}` : entry.name
-      sendToWs(fullPath) // Send directly to PTY instead of populating input field
+      sendToWs(fullPath)
       closeDrawer()
     }
   }
@@ -384,6 +443,58 @@ export function TerminalPage() {
     e.name.toLowerCase().includes(searchQuery.toLowerCase().trim())
   )
 
+  // ── Settings sections ──────────────────────────────────────────────────────
+
+  const settingsSections = [
+    {
+      title: 'Tema',
+      content: (
+        <div className={styles.settingsSegmented}>
+          <button
+            className={[styles.segBtn, !isDark ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+            onClick={() => { applyTheme(false); setSettingsOpen(false) }}
+          >☀ Giorno</button>
+          <button
+            className={[styles.segBtn, isDark ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+            onClick={() => { applyTheme(true); setSettingsOpen(false) }}
+          >🌙 Notte</button>
+        </div>
+      ),
+    },
+    {
+      title: 'Input tastiera',
+      content: (
+        <label className={styles.settingsSwitch}>
+          <span className={styles.settingsSwitchLabel}>Text area</span>
+          <div
+            className={[styles.switchTrack, showTextarea ? styles.switchTrackOn : ''].filter(Boolean).join(' ')}
+            onClick={() => setShowTextarea(v => !v)}
+            role="switch"
+            aria-checked={showTextarea}
+            tabIndex={0}
+            onKeyDown={e => { if (e.key === ' ' || e.key === 'Enter') setShowTextarea(v => !v) }}
+          >
+            <div className={styles.switchThumb} />
+          </div>
+        </label>
+      ),
+    },
+    {
+      title: 'Modalità terminale',
+      content: (
+        <div className={styles.settingsSegmented} style={{ flexDirection: 'column', gap: 4 }}>
+          {([ ['raw', 'Raw'], ['wrap', 'Adattiva'], ['zoom', 'Zoom Out'] ] as [DisplayMode, string][]).map(([mode, label]) => (
+            <button
+              key={mode}
+              className={[styles.segBtn, styles.segBtnFull, displayMode === mode ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+              onClick={() => { setDisplayMode(mode); setSettingsOpen(false) }}
+            >{label}</button>
+          ))}
+        </div>
+      ),
+    },
+  ]
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const statusLabel: Record<ConnectionState, string> = {
@@ -391,6 +502,13 @@ export function TerminalPage() {
     connected:    'Connected',
     disconnected: 'Disconnected',
   }
+
+  // CSS classes for terminal wrapper based on display mode
+  const wrapperClasses = [
+    styles.terminalWrapper,
+    displayMode === 'wrap' ? styles.terminalWrapperWrap : '',
+    displayMode === 'zoom' ? styles.terminalWrapperZoom : '',
+  ].filter(Boolean).join(' ')
 
   return (
     <div className={styles.page} ref={termPageRef}>
@@ -405,11 +523,13 @@ export function TerminalPage() {
         >←</Button>
         <span className={styles.title}>{repo ? `claude-${repo}` : 'Loading…'}</span>
         <Button variant="toolbar" onClick={openDrawer}>Files</Button>
-        <Button
-          variant="theme"
-          title="Toggle light/dark theme"
-          onClick={() => applyTheme(!isDark)}
-        >{isDark ? '☀' : '🌙'}</Button>
+        <SettingsDropdown
+          open={settingsOpen}
+          onToggle={() => setSettingsOpen(v => !v)}
+          onClose={() => setSettingsOpen(false)}
+          sections={settingsSections}
+          buttonTitle="Impostazioni"
+        />
         <div className={styles.statusArea}>
           <StatusDot state={connState} activity={isActivity} />
           <span className={styles.statusText}>{statusLabel[connState]}</span>
@@ -417,8 +537,12 @@ export function TerminalPage() {
       </header>
 
       {/* Terminal */}
-      <div className={styles.terminalWrapper}>
-        <div ref={termContainerRef} className={styles.terminalContainer} />
+      <div className={wrapperClasses}>
+        <div
+          ref={termContainerRef}
+          className={styles.terminalContainer}
+          style={displayMode === 'zoom' ? { transform: `scale(${zoomScale})`, transformOrigin: 'top left' } : undefined}
+        />
         {showOverlay && (
           <div className={styles.reconnectOverlay}>
             <Spinner size="md" />
@@ -427,6 +551,30 @@ export function TerminalPage() {
           </div>
         )}
       </div>
+
+      {/* Textarea input bar (mobile) */}
+      {showTextarea && (
+        <div className={styles.textareaBar}>
+          <textarea
+            ref={textareaRef}
+            className={styles.textareaInput}
+            value={textareaValue}
+            onChange={e => setTextareaValue(e.target.value)}
+            onKeyDown={handleTextareaKey}
+            placeholder="Scrivi comando… (Invio per inviare)"
+            rows={1}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+          />
+          <button
+            className={styles.textareaSendBtn}
+            onClick={handleTextareaSend}
+            disabled={!textareaValue.trim()}
+          >Send</button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className={styles.toolbar}>
@@ -465,7 +613,6 @@ export function TerminalPage() {
             disabled={false}
           >
             {voice.isPending ? (
-              /* Spinner while awaiting permission */
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="16" height="16" className={styles.micSpinner}>
                 <circle cx="12" cy="12" r="9" strokeDasharray="28 56" strokeLinecap="round"/>
               </svg>

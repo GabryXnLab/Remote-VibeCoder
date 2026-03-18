@@ -49,11 +49,29 @@
   overflow-y: hidden;
   background: #1a1a1a;
   position: relative;
+  /* Lateral borders — 1px, barely perceptible */
+  border-left:  1px solid rgba(255, 255, 255, 0.07);
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Wrap mode: force word-wrap, no horizontal scroll */
+.terminalWrapperWrap {
+  overflow-x: hidden;
+}
+
+/* Zoom mode: clip scaled content, no scroll */
+.terminalWrapperZoom {
+  overflow: hidden;
 }
 
 .terminalContainer {
   height: 100%;
   min-width: min-content;
+}
+
+/* Zoom mode container: anchor to top-left for scale transform */
+.terminalWrapperZoom .terminalContainer {
+  transform-origin: top left;
 }
 
 /* xterm overrides (global scope needed) */
@@ -64,6 +82,11 @@
 
 .terminalWrapper :global(.xterm-viewport) {
   background: transparent !important;
+}
+
+/* Wrap mode — let xterm handle line breaks at viewport width */
+.terminalWrapperWrap :global(.xterm-screen) {
+  width: 100% !important;
 }
 
 /* ── Reconnect overlay ── */
@@ -86,7 +109,58 @@
   text-align: center;
 }
 
-/* ── Mobile input bar ── */
+/* ── Textarea input bar ── */
+.textareaBar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.textareaInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  padding: 8px 10px;
+  outline: none;
+  resize: none;
+  line-height: 1.4;
+  max-height: 80px;
+  overflow-y: auto;
+  -webkit-appearance: none;
+  transition: border-color 0.15s;
+}
+
+.textareaInput:focus { border-color: var(--accent-orange); }
+
+.textareaSendBtn {
+  flex-shrink: 0;
+  height: 38px;
+  padding: 0 16px;
+  background: var(--accent-orange);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 0.15s;
+}
+
+.textareaSendBtn:disabled { opacity: 0.45; cursor: default; }
+.textareaSendBtn:not(:disabled):active { opacity: 0.8; }
+
+/* ── Mobile input bar (legacy, kept for reference) ── */
 .inputBar {
   display: flex;
   align-items: center;
@@ -116,13 +190,6 @@
 .inputField:focus     { border-color: var(--accent-orange); }
 .inputField.listening { font-style: italic; color: var(--text-secondary); }
 
-.micBtn {
-  flex-shrink: 0;
-  width: 38px !important;
-  height: 38px !important;
-  padding: 0 !important;
-}
-
 .sendBtn {
   flex-shrink: 0;
   padding: 8px 16px;
@@ -138,29 +205,6 @@
 }
 
 .sendBtn:active { opacity: 0.8; }
-
-.voiceError {
-  position: absolute;
-  bottom: calc(100% + 4px);
-  left: 10px;
-  right: 10px;
-  background: var(--danger);
-  color: #fff;
-  font-family: var(--font-ui);
-  font-size: 12px;
-  padding: 6px 10px;
-  border-radius: 5px;
-  z-index: 10;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.2s, transform 0.2s;
-  pointer-events: none;
-}
-
-.voiceErrorVisible {
-  opacity: 1;
-  transform: translateY(0);
-}
 
 /* ── Toolbar ── */
 .toolbar {
@@ -310,6 +354,94 @@
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Settings dropdown content ── */
+
+/* Segmented control (theme + display mode) */
+.settingsSegmented {
+  display: flex;
+  gap: 4px;
+}
+
+.segBtn {
+  flex: 1;
+  padding: 5px 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+
+.segBtn:hover { border-color: var(--accent-orange); color: var(--text-primary); }
+
+.segBtnActive {
+  background: var(--accent-orange) !important;
+  border-color: var(--accent-orange) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+
+/* Full-width variant for stacked layout */
+.segBtnFull { flex: none; width: 100%; text-align: left; }
+
+/* Toggle switch */
+.settingsSwitch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settingsSwitchLabel {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.switchTrack {
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  flex-shrink: 0;
+  outline: none;
+}
+
+.switchTrack:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-orange);
+}
+
+.switchTrackOn {
+  background: var(--accent-orange);
+  border-color: var(--accent-orange);
+}
+
+.switchThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.switchTrackOn .switchThumb {
+  transform: translateX(18px);
 }
 
 /* ── File drawer ── */

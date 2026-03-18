@@ -39,3 +39,6 @@ export type { AlertVariant, AlertProps } from './feedback/Alert'
 
 export { ConflictWarningDialog } from './feedback/ConflictWarningDialog'
 export type { ConflictContext, ConflictWarningDialogProps } from './feedback/ConflictWarningDialog'
+
+export { SettingsDropdown } from './ui/SettingsDropdown'
+export type { SettingsSection, SettingsDropdownProps } from './ui/SettingsDropdown'
