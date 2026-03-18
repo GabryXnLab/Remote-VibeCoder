@@ -333,12 +333,8 @@ export function ProjectsPage() {
       return (
         <>
           <Button variant="primary" size="sm"
-            onClick={e => handleOpen(repo.name, e.currentTarget as HTMLButtonElement)}
-          >Open</Button>
-          <Button variant="secondary" size="sm"
-            title="Open a bare shell (no Claude Code)"
             onClick={e => handleOpen(repo.name, e.currentTarget as HTMLButtonElement, true)}
-          >Shell</Button>
+          >Open</Button>
           <Button variant="secondary" size="sm"
             title="git pull"
             onClick={e => handlePull(repo.name, e.currentTarget as HTMLButtonElement)}

@@ -124,7 +124,6 @@ function renderRepos(repos, activeSessions) {
       } else {
         actionsHtml = `
           <button class="btn btn-primary btn-small" data-action="open" data-repo="${escAttr(repo.name)}">Open</button>
-          <button class="btn btn-secondary btn-small" data-action="open-shell" data-repo="${escAttr(repo.name)}" title="Open a bare shell (no Claude Code)">Shell</button>
           <button class="btn btn-secondary btn-small" data-action="pull" data-repo="${escAttr(repo.name)}" title="git pull">↓</button>
         `;
       }
@@ -194,7 +193,7 @@ async function handleRepoClick(e) {
 
     } else if (action === 'open') {
       btn.textContent = 'Starting…';
-      const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'POST' });
+      const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}?shell=true`, { method: 'POST' });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || `Failed to start session (${res.status})`);
@@ -203,6 +202,7 @@ async function handleRepoClick(e) {
       return;
 
     } else if (action === 'open-shell') {
+      // open-shell button was removed from UI, but keep the handler in case it's triggered manually or from cached pages
       btn.textContent = 'Starting…';
       const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}?shell=true`, { method: 'POST' });
       if (!res.ok) {
