@@ -286,6 +286,54 @@ export function TerminalPage() {
       }
     })
 
+    // ── Disable mobile keyboard autocomplete/autocorrect and composition ─────
+    const xtermTa = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+    if (xtermTa) {
+      xtermTa.setAttribute('autocomplete', 'off')
+      xtermTa.setAttribute('autocorrect', 'off')
+      xtermTa.setAttribute('autocapitalize', 'none')
+      xtermTa.setAttribute('spellcheck', 'false')
+      xtermTa.setAttribute('data-gramm', 'false')       // Grammarly
+      xtermTa.setAttribute('data-gramm_editor', 'false')
+
+      // Force character-by-character input on mobile by intercepting
+      // composition events and sending each character immediately
+      let composing = false
+      let lastComposedLen = 0
+
+      xtermTa.addEventListener('compositionstart', () => {
+        composing = true
+        lastComposedLen = 0
+      })
+
+      xtermTa.addEventListener('compositionupdate', (e: CompositionEvent) => {
+        if (!composing) return
+        const composed = e.data || ''
+        // Send only the new characters added since last update
+        const newChars = composed.slice(lastComposedLen)
+        if (newChars) {
+          const ws = inst.ws
+          if (ws?.readyState === WebSocket.OPEN) ws.send(newChars)
+        }
+        lastComposedLen = composed.length
+      })
+
+      xtermTa.addEventListener('compositionend', (e: CompositionEvent) => {
+        if (!composing) { composing = false; return }
+        // Send any remaining characters not sent during update
+        const composed = e.data || ''
+        const newChars = composed.slice(lastComposedLen)
+        if (newChars) {
+          const ws = inst.ws
+          if (ws?.readyState === WebSocket.OPEN) ws.send(newChars)
+        }
+        composing = false
+        lastComposedLen = 0
+        // Clear the textarea to prevent xterm from also sending the composed text
+        xtermTa.value = ''
+      })
+    }
+
     connectSession(sessionId, inst)
   }, [isDark, connectSession])
 
@@ -307,10 +355,24 @@ export function TerminalPage() {
     const page = termPageRef.current
     if (!window.visualViewport || !page) return
     const onVp = () => {
-      if (window.visualViewport) page.style.height = window.visualViewport.height + 'px'
+      if (!window.visualViewport) return
+      const vv = window.visualViewport
+      // Shrink page to fit above keyboard
+      page.style.height = vv.height + 'px'
+      // Pin page to visual viewport when user scrolls with keyboard open
+      page.style.transform = `translateY(${vv.offsetTop}px)`
+      // Re-fit active terminal so content (including Claude Code prompt) renders correctly
+      const inst = termMapRef.current.get(activeSessionIdRef.current)
+      if (inst) {
+        try { inst.fit.fit() } catch { /* noop */ }
+      }
     }
     window.visualViewport.addEventListener('resize', onVp)
-    return () => window.visualViewport?.removeEventListener('resize', onVp)
+    window.visualViewport.addEventListener('scroll', onVp)
+    return () => {
+      window.visualViewport?.removeEventListener('resize', onVp)
+      window.visualViewport?.removeEventListener('scroll', onVp)
+    }
   }, [])
 
   // ── Kill session ─────────────────────────────────────────────────────────────
