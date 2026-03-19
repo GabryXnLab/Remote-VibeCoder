@@ -405,7 +405,13 @@ export function TerminalPage() {
           <WindowManager
             sessions={sessions}
             activeSessionId={activeSessionId}
-            onActivate={setActiveSessionId}
+            onActivate={(sessionId) => {
+            setActiveSessionId(sessionId)
+            setTimeout(() => {
+              const inst = termMapRef.current.get(sessionId)
+              inst?.term.focus()
+            }, 0)
+          }}
             onClose={handleKillSession}
             renderTerminal={renderTerminal}
           />

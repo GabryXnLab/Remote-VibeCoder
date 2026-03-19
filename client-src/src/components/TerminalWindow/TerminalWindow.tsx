@@ -133,7 +133,7 @@ export function TerminalWindow({
       </div>
 
       {/* Terminal content */}
-      <div className={styles.content}>
+      <div className={styles.content} onMouseDown={onFocus}>
         {children}
       </div>
 
