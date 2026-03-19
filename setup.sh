@@ -89,15 +89,33 @@ sudo apt-get install -y -qq google-cloud-cli-alpha google-cloud-cli-beta || true
 sudo gcloud components install alpha beta --quiet || warn "Could not install components via gcloud (this is expected if managed by apt)"
 success "Google Cloud SDK components (alpha/beta) ready"
 
-# ─── Step 3: Node.js LTS ─────────────────────────────────────────────────────
+# ─── Step 3: Node.js LTS (via nvm, no sudo) ──────────────────────────────────
 header "Step 3 / 10 — Node.js LTS"
-if command -v node &>/dev/null; then
-  NODE_VER=$(node --version)
-  success "Node.js already installed: $NODE_VER"
+export NVM_DIR="$HOME/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$NVM_DIR/nvm.sh"
+fi
+
+if command -v nvm &>/dev/null; then
+  success "nvm already installed: $(nvm --version)"
 else
-  info "Installing Node.js LTS via NodeSource…"
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+  info "Installing nvm…"
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+  # Load nvm for the rest of this script
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck source=/dev/null
+  source "$NVM_DIR/nvm.sh"
+  success "nvm installed"
+fi
+
+if command -v node &>/dev/null; then
+  success "Node.js already installed: $(node --version)"
+else
+  info "Installing Node.js LTS via nvm (no sudo)…"
+  nvm install --lts
+  nvm use --lts
+  nvm alias default 'lts/*'
   success "Node.js installed: $(node --version)"
 fi
 
@@ -113,18 +131,21 @@ success "nginx + certbot installed"
 header "Step 5 / 10 — Development Tools"
 info "Installing global npm packages (Claude Code, TypeScript, Vite, Clasp, etc.)…"
 
-# Core CLI
-if ! command -v claude &>/dev/null; then
-  sudo npm install -g @anthropic-ai/claude-code
+# Core CLI (no sudo — nvm manages npm in user space)
+if command -v claude &>/dev/null; then
+  success "Claude Code already installed: $(claude --version 2>/dev/null || echo 'unknown')"
+else
+  info "Installing @anthropic-ai/claude-code globally…"
+  npm install -g @anthropic-ai/claude-code
   success "Claude Code installed"
 fi
 
 # TypeScript & Build Tools
-sudo npm install -g typescript vite @google/clasp
+npm install -g typescript vite @google/clasp
 success "TypeScript, Vite, and Clasp installed"
 
 # QA Tools
-sudo npm install -g eslint prettier vitest
+npm install -g eslint prettier vitest
 success "ESLint, Prettier, and Vitest installed"
 
 # ─── Step 6: Clone / update app ──────────────────────────────────────────────
