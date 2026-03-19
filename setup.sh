@@ -43,7 +43,7 @@ echo -e "${NC}"
 echo ""
 
 # ─── Step 1: Swap (BEFORE npm install) ───────────────────────────────────────
-header "Step 1 / 10 — Swap"
+header "Step 1 / 12 — Swap"
 if free | awk '/^Swap:/{exit !$2}'; then
   success "Swap already configured ($(free -h | awk '/^Swap:/{print $2}'))"
 else
@@ -60,7 +60,7 @@ else
 fi
 
 # ─── Step 2: System packages ─────────────────────────────────────────────────
-header "Step 2 / 10 — System Packages"
+header "Step 2 / 12 — System Packages"
 info "Updating package lists…"
 sudo apt-get update -qq
 
@@ -69,7 +69,7 @@ sudo apt-get install -y -qq git tmux curl build-essential
 success "System packages installed"
 
 # ─── Step 3: Node.js LTS ─────────────────────────────────────────────────────
-header "Step 3 / 10 — Node.js LTS"
+header "Step 3 / 12 — Node.js LTS"
 if command -v node &>/dev/null; then
   NODE_VER=$(node --version)
   success "Node.js already installed: $NODE_VER"
@@ -80,16 +80,51 @@ else
   success "Node.js installed: $(node --version)"
 fi
 
-# ─── Step 4: nginx + certbot ─────────────────────────────────────────────────
-header "Step 4 / 10 — nginx + certbot"
+# ─── Step 4: Google Cloud SDK ────────────────────────────────────────────────
+# Installs gcloud CLI with alpha and beta components for GCP management.
+header "Step 4 / 12 — Google Cloud SDK"
+if command -v gcloud &>/dev/null; then
+  success "Google Cloud SDK already installed: $(gcloud --version | head -n 1)"
+else
+  info "Installing Google Cloud SDK…"
+  # Install dependencies for gcloud installation
+  sudo apt-get install -y -qq apt-transport-https ca-certificates gnupg
+
+  # Add the gcloud CLI repo
+  if [ ! -f /usr/share/keyrings/cloud.google.gpg ]; then
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+  fi
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq google-cloud-cli google-cloud-cli-alpha google-cloud-cli-beta
+  success "Google Cloud SDK installed"
+fi
+
+# Ensure alpha/beta components are enabled (idempotent)
+info "Ensuring gcloud alpha/beta components are installed…"
+# gcloud components install might fail if run as root or in certain environments,
+# but the apt packages above should have handled it. This is an extra check.
+sudo gcloud components install alpha beta --quiet || warn "Could not install alpha/beta via gcloud command; assuming apt packages are sufficient."
+
+# ─── Step 5: TypeScript & React Ecosystem ────────────────────────────────────
+# Installs core web development tools, quality assurance libraries,
+# and Google Apps Script deployment tool (clasp).
+header "Step 5 / 12 — TypeScript/React Ecosystem"
+info "Installing TypeScript, Vite, ESLint, Prettier, Vitest, and Clasp…"
+sudo npm install -g typescript vite eslint prettier vitest @google/clasp
+success "TypeScript/React ecosystem installed"
+
+# ─── Step 6: nginx + certbot ─────────────────────────────────────────────────
+header "Step 6 / 12 — nginx + certbot"
 info "Installing nginx and certbot…"
 sudo apt-get install -y -qq nginx certbot python3-certbot-nginx
 sudo systemctl enable nginx
 sudo systemctl start nginx
 success "nginx + certbot installed"
 
-# ─── Step 5: Claude Code ─────────────────────────────────────────────────────
-header "Step 5 / 10 — Claude Code CLI"
+# ─── Step 7: Claude Code ─────────────────────────────────────────────────────
+header "Step 7 / 12 — Claude Code CLI"
 if command -v claude &>/dev/null; then
   success "Claude Code already installed: $(claude --version 2>/dev/null || echo 'unknown')"
 else
@@ -98,8 +133,8 @@ else
   success "Claude Code installed"
 fi
 
-# ─── Step 6: Clone / update app ──────────────────────────────────────────────
-header "Step 6 / 10 — App Files"
+# ─── Step 8: Clone / update app ──────────────────────────────────────────────
+header "Step 8 / 12 — App Files"
 if [ -d "$APP_DIR/.git" ]; then
   info "Updating existing clone at $APP_DIR…"
   git -C "$APP_DIR" pull --ff-only
@@ -152,8 +187,8 @@ git config --global credential.https://github.com.helper \
 
 success "Git credential helper installed at ~/bin/git-askpass-claude.sh"
 
-# ─── Step 7: Interactive prompts ─────────────────────────────────────────────
-header "Step 7 / 10 — Configuration"
+# ─── Step 9: Interactive prompts ─────────────────────────────────────────────
+header "Step 9 / 12 — Configuration"
 
 # All interactive reads go through /dev/tty so they always reach the keyboard,
 # regardless of how the script was invoked (pipe, redirect, etc.)
@@ -195,8 +230,8 @@ echo -e "${YELLOW}Your public domain (e.g. gabry-remote-vibecoder.duckdns.org):$
 ask "  Domain: " DOMAIN
 [ -z "$DOMAIN" ] && { error "Domain cannot be empty"; exit 1; }
 
-# ─── Step 8: Write config.json ───────────────────────────────────────────────
-header "Step 8 / 10 — Writing Config"
+# ─── Step 10: Write config.json ──────────────────────────────────────────────
+header "Step 10 / 12 — Writing Config"
 
 # Generate password hash using Node.js.
 # IMPORTANT: Pass the password via environment variable (not string interpolation)
@@ -230,8 +265,8 @@ EOF
 chmod 600 "$CONFIG_FILE"
 success "Config written to $CONFIG_FILE"
 
-# ─── Step 9: nginx + TLS ─────────────────────────────────────────────────────
-header "Step 9 / 10 — nginx + TLS"
+# ─── Step 11: nginx + TLS ────────────────────────────────────────────────────
+header "Step 11 / 12 — nginx + TLS"
 
 # Minimal HTTP config to pass the ACME challenge
 sudo bash -c "cat > /etc/nginx/sites-available/remote-vibecoder << 'NGINXEOF'
@@ -289,8 +324,8 @@ NGINXEOF"
 sudo nginx -t && sudo systemctl reload nginx
 success "nginx configured with TLS + WebSocket proxy for ${DOMAIN}"
 
-# ─── Step 10: systemd services ───────────────────────────────────────────────
-header "Step 10 / 10 — systemd Services"
+# ─── Step 12: systemd services ───────────────────────────────────────────────
+header "Step 12 / 12 — systemd Services"
 
 # Install claude-mobile service (template: @user)
 SERVICE_NAME="claude-mobile@${WHOAMI}.service"
