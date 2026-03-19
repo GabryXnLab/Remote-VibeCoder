@@ -27,6 +27,10 @@ const RECONNECT_FACTOR  = 1.5
 const MIN_COLS          = 220
 const SESSION_POLL_MS   = 10000
 
+type DisplayMode = 'default' | 'adaptive' | 'zoom-out'
+const FONT_SIZE_NORMAL   = 13
+const FONT_SIZE_ZOOM_OUT = 8
+
 // ─── xterm themes ─────────────────────────────────────────────────────────────
 const XTERM_DARK: ITheme = {
   background: '#1a1a1a', foreground: '#e5e5e5',
@@ -82,6 +86,12 @@ export function TerminalPage() {
   const [sidebarOpen,   setSidebarOpen]   = useState(false)
   const [openMenuOpen,  setOpenMenuOpen]  = useState(false)
   const [settingsOpen,  setSettingsOpen]  = useState(false)
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() =>
+    (localStorage.getItem('vibecoder_display_mode') as DisplayMode) ?? 'default'
+  )
+  const displayModeRef = useRef<DisplayMode>(displayMode)
+  useEffect(() => { displayModeRef.current = displayMode }, [displayMode])
+
   const [showTextarea,  setShowTextarea]  = useState(() =>
     localStorage.getItem('vibecoder_textarea') === 'true'
   )
@@ -99,6 +109,18 @@ export function TerminalPage() {
   useEffect(() => {
     localStorage.setItem('vibecoder_textarea', String(showTextarea))
   }, [showTextarea])
+
+  // Persist display mode + apply to body for global CSS selectors
+  useEffect(() => {
+    localStorage.setItem('vibecoder_display_mode', displayMode)
+    document.body.dataset.displayMode = displayMode
+  }, [displayMode])
+
+  // Apply body dataset on first render
+  useEffect(() => {
+    document.body.dataset.displayMode = displayMode
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Auth guard ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -137,6 +159,23 @@ export function TerminalPage() {
       term.options.theme = isDark ? XTERM_DARK : XTERM_LIGHT
     })
   }, [isDark])
+
+  // ── Re-fit all terminals when display mode changes ──────────────────────────
+  useEffect(() => {
+    termMapRef.current.forEach((inst) => {
+      try {
+        inst.term.options.fontSize = displayMode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
+        inst.fit.fit()
+        if (displayMode === 'default' && inst.term.cols < MIN_COLS) {
+          inst.term.resize(MIN_COLS, inst.term.rows)
+        }
+        const ws = inst.ws
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: inst.term.cols, rows: inst.term.rows }))
+        }
+      } catch { /* noop */ }
+    })
+  }, [displayMode])
 
   // ── Helper: send to active session WS ──────────────────────────────────────
   const sendToWs = useCallback((data: string) => {
@@ -202,7 +241,7 @@ export function TerminalPage() {
     const term = new Terminal({
       theme:            isDark ? XTERM_DARK : XTERM_LIGHT,
       fontFamily:       "'JetBrains Mono', 'Fira Code', Consolas, monospace",
-      fontSize:         13,
+      fontSize:         displayModeRef.current === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL,
       lineHeight:       1.3,
       cursorBlink:      true,
       scrollback:       5000,
@@ -227,8 +266,10 @@ export function TerminalPage() {
 
     const ro = new ResizeObserver(() => {
       try {
+        const mode = displayModeRef.current
+        term.options.fontSize = mode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
         fit.fit()
-        if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
+        if (mode === 'default' && term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
         const ws = inst.ws
         if (ws?.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
@@ -333,6 +374,22 @@ export function TerminalPage() {
       ),
     },
     {
+      title: 'Modalità visualizzazione',
+      content: (
+        <div className={styles.settingsSegmented}>
+          {(['default', 'adaptive', 'zoom-out'] as DisplayMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={[styles.segBtn, displayMode === mode ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+              onClick={() => setDisplayMode(mode)}
+            >
+              {mode === 'default' ? 'Default' : mode === 'adaptive' ? 'Adaptive' : 'Zoom Out'}
+            </button>
+          ))}
+        </div>
+      ),
+    },
+    {
       title: 'Input tastiera',
       content: (
         <label className={styles.settingsSwitch}>
@@ -390,7 +447,7 @@ export function TerminalPage() {
       {/* Main content area */}
       <div className={styles.main}>
         {isMobile ? (
-          <div className={styles.mobileTermWrapper}>
+          <div className={styles.mobileTermWrapper} data-mode={displayMode}>
             {activeSessionId && renderTerminal(activeSessionId)}
             {sessions
               .filter((s: SessionMetadata) => s.sessionId !== activeSessionId)
