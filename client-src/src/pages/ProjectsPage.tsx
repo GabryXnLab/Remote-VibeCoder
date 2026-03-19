@@ -20,9 +20,13 @@ interface Repo {
 }
 
 interface Session {
-  name:    string
-  windows: number
-  created: number
+  sessionId: string
+  repo:      string | null
+  label:     string
+  mode:      'claude' | 'shell'
+  workdir:   string
+  created:   number
+  windows:   number
 }
 
 interface GitFile {
@@ -167,7 +171,8 @@ export function ProjectsPage() {
       setRepos(rawRepos)
 
       // Non-blocking enrichment
-      loadGitStatuses(rawRepos, new Set(rawSessions.map(s => s.name)))
+      const reposWithSession = new Set(rawSessions.filter(s => s.repo).map(s => s.repo!))
+      loadGitStatuses(rawRepos, reposWithSession)
       loadSyncStatuses(rawRepos)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
@@ -180,9 +185,9 @@ export function ProjectsPage() {
 
   // ── Git status enrichment (for commit file counts) ──────────────────────────
 
-  async function loadGitStatuses(rawRepos: Repo[], activeSessions: Set<string>) {
+  async function loadGitStatuses(rawRepos: Repo[], reposWithSession: Set<string>) {
     const candidates = rawRepos.filter(
-      r => r.cloned && !r.archived && !activeSessions.has(`claude-${r.name}`)
+      r => r.cloned && !r.archived && !reposWithSession.has(r.name)
     )
     await Promise.all(candidates.map(async (repo) => {
       try {
@@ -244,10 +249,6 @@ export function ProjectsPage() {
   }, [])
 
   // ── Actions ─────────────────────────────────────────────────────────────────
-
-  function openTerminal(repo: string) {
-    navigate(`/terminal?repo=${encodeURIComponent(repo)}`)
-  }
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => { /* noop */ })
@@ -371,15 +372,17 @@ export function ProjectsPage() {
     btn.disabled = true
     btn.textContent = 'Starting…'
     try {
-      const url = shell
-        ? `/api/sessions/${encodeURIComponent(repo)}?shell=true`
-        : `/api/sessions/${encodeURIComponent(repo)}`
-      const res = await fetch(url, { method: 'POST' })
+      const res = await fetch('/api/sessions', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ repo, mode: shell ? 'shell' : 'claude' }),
+      })
       if (!res.ok) {
         const d = await res.json().catch(() => ({})) as { error?: string }
         throw new Error(d.error ?? `Failed to start session (${res.status})`)
       }
-      openTerminal(repo)
+      const { sessionId } = await res.json() as { sessionId: string }
+      navigate(`/terminal?session=${encodeURIComponent(sessionId)}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start')
       btn.disabled = false
@@ -387,10 +390,10 @@ export function ProjectsPage() {
     }
   }
 
-  async function handleKillSession(repo: string) {
-    if (!confirm(`Kill session claude-${repo}? Claude Code will stop.`)) return
+  async function handleKillSession(sessionId: string) {
+    if (!confirm(`Kill session ${sessionId}? Claude Code will stop.`)) return
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'DELETE' })
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('Failed to kill session')
       await loadAll()
     } catch (err) {
@@ -500,7 +503,7 @@ export function ProjectsPage() {
 
   // ── Active sessions ──────────────────────────────────────────────────────────
 
-  const activeSessions = new Set(sessions.map(s => s.name))
+  const reposWithSession = new Set(sessions.filter(s => s.repo).map(s => s.repo!))
 
   // ── Sync indicator renderer ────────────────────────────────────────────────
 
@@ -519,17 +522,17 @@ export function ProjectsPage() {
   // ── Render helpers ───────────────────────────────────────────────────────────
 
   const repoActions = (repo: RepoWithSync) => {
-    const sessionName = `claude-${repo.name}`
-    const hasSession  = activeSessions.has(sessionName)
+    const hasSession  = reposWithSession.has(repo.name)
+    const repoSession = sessions.find(s => s.repo === repo.name)
 
     if (repo.archived) {
       return <span className={styles.archivedNotice}>Archived — read only</span>
     }
     if (repo.cloned) {
-      if (hasSession) {
+      if (hasSession && repoSession) {
         return (
           <Button variant="primary" size="sm"
-            onClick={() => openTerminal(repo.name)}
+            onClick={() => navigate(`/terminal?session=${encodeURIComponent(repoSession.sessionId)}`)}
           >Attach</Button>
         )
       }
@@ -583,25 +586,24 @@ export function ProjectsPage() {
         {!loading && sessions.length > 0 && (
           <Section title="Active Sessions" style={{ marginBottom: '24px' }}>
             <div className={styles.repoList}>
-              {sessions.map(s => {
-                const repoName = s.name.replace(/^claude-/, '')
-                return (
-                  <div key={s.name} className={styles.repoCard}>
-                    <div className={styles.repoInfo}>
-                      <div className={styles.repoName}>{repoName}</div>
-                      <div className={styles.repoMeta}>
-                        <Badge variant="active">● ACTIVE</Badge>
-                        <span>{s.windows} window{s.windows !== 1 ? 's' : ''}</span>
-                        <span>since {formatTime(s.created)}</span>
-                      </div>
-                    </div>
-                    <div className={styles.repoActions}>
-                      <Button variant="primary" size="sm" onClick={() => openTerminal(repoName)}>Attach</Button>
-                      <Button variant="danger"  size="sm" onClick={() => handleKillSession(repoName)}>Kill</Button>
+              {sessions.map(s => (
+                <div key={s.sessionId} className={styles.repoCard}>
+                  <div className={styles.repoInfo}>
+                    <div className={styles.repoName}>{s.label}</div>
+                    <div className={styles.repoMeta}>
+                      <Badge variant="active">● ACTIVE</Badge>
+                      <span>{s.windows} window{s.windows !== 1 ? 's' : ''}</span>
+                      <span>since {formatTime(s.created)}</span>
                     </div>
                   </div>
-                )
-              })}
+                  <div className={styles.repoActions}>
+                    <Button variant="primary" size="sm"
+                      onClick={() => navigate(`/terminal?session=${encodeURIComponent(s.sessionId)}`)}>Attach</Button>
+                    <Button variant="danger"  size="sm"
+                      onClick={() => handleKillSession(s.sessionId)}>Kill</Button>
+                  </div>
+                </div>
+              ))}
             </div>
           </Section>
         )}
