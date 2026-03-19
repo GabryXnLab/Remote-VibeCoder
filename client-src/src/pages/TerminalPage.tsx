@@ -7,7 +7,7 @@ import 'xterm/css/xterm.css'
 import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
 import {
-  Button, Spinner, StatusDot, SettingsDropdown,
+  Button, StatusDot, SettingsDropdown,
 } from '@/components'
 import { TerminalOpenMenu }  from '@/components/TerminalOpenMenu/TerminalOpenMenu'
 import { TerminalSidebar }   from '@/components/TerminalSidebar/TerminalSidebar'

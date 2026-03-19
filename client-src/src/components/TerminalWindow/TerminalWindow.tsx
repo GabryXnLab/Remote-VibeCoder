@@ -17,7 +17,7 @@ interface TerminalWindowProps {
   isActive:    boolean
   onFocus:     () => void
   onMinimize:  () => void
-  onRestore:   () => void
+  onRestore?:  () => void
   onClose:     () => void
   onMove:      (x: number, y: number) => void
   onResize:    (width: number, height: number) => void
@@ -29,7 +29,7 @@ const MIN_HEIGHT = 200
 
 export function TerminalWindow({
   sessionId, title, windowState, isActive,
-  onFocus, onMinimize, onRestore, onClose, onMove, onResize,
+  onFocus, onMinimize, onClose, onMove, onResize,
   children,
 }: TerminalWindowProps) {
   const { x, y, width, height, minimized, zIndex } = windowState
