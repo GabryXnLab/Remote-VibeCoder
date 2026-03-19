@@ -55,6 +55,10 @@ export function TerminalWindow({
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragState.current) return
+    if (!(e.buttons & 1)) { // Ensure left button is pressed
+      dragState.current = null
+      return
+    }
     const dx = e.clientX - dragState.current.startX
     const dy = e.clientY - dragState.current.startY
     const newX = Math.max(0, dragState.current.origX + dx)
@@ -62,8 +66,9 @@ export function TerminalWindow({
     onMove(newX, newY)
   }, [onMove])
 
-  const onPointerUp = useCallback(() => {
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     dragState.current = null
+    try { (e.target as HTMLElement).releasePointerCapture(e.pointerId) } catch (_) {}
   }, [])
 
   // ─── Resize (bottom-right handle) ─────────────────────────────────────────
@@ -79,6 +84,10 @@ export function TerminalWindow({
 
   const onResizePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!resizeState.current) return
+    if (!(e.buttons & 1)) { // Ensure left button is pressed
+      resizeState.current = null
+      return
+    }
     const dw = e.clientX - resizeState.current.startX
     const dh = e.clientY - resizeState.current.startY
     onResize(
@@ -87,8 +96,9 @@ export function TerminalWindow({
     )
   }, [onResize])
 
-  const onResizePointerUp = useCallback(() => {
+  const onResizePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     resizeState.current = null
+    try { (e.target as HTMLElement).releasePointerCapture(e.pointerId) } catch (_) {}
   }, [])
 
   // ─── Fullscreen toggle ─────────────────────────────────────────────────────
