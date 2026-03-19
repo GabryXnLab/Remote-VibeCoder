@@ -1,0 +1,121 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 99;
+  animation: fadeIn var(--anim-overlay-fade, 180ms) ease;
+}
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(300px, 85vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--anim-sidebar-slide, 250ms) var(--anim-ease-out, ease);
+}
+.sidebarOpen { transform: translateX(0); }
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.title { font-size: 14px; font-weight: 600; color: var(--text); }
+
+.dismissBtn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 4px;
+}
+
+.list { flex: 1; overflow-y: auto; padding: 8px 0; }
+
+.empty { padding: 16px; font-size: 13px; color: var(--text-dim); text-align: center; }
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.item:hover { background: var(--surface-hover); }
+.itemActive {
+  border-left-color: var(--accent-orange);
+  background: var(--surface-raised);
+}
+
+.itemMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.itemLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemMeta { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+
+.tag {
+  background: rgba(245,158,11,0.15);
+  color: var(--accent-orange);
+  border-radius: 3px;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+
+.tagShell {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+  padding: 1px 5px;
+  color: var(--text-dim);
+}
+
+.itemDir {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemTime { font-size: 11px; color: var(--text-dim); }
+
+.closeBtn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.item:hover .closeBtn { opacity: 1; }
