@@ -55,10 +55,6 @@ export function TerminalWindow({
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragState.current) return
-    if (!(e.buttons & 1)) { // Ensure left button is pressed
-      dragState.current = null
-      return
-    }
     const dx = e.clientX - dragState.current.startX
     const dy = e.clientY - dragState.current.startY
     const newX = Math.max(0, dragState.current.origX + dx)
@@ -84,10 +80,6 @@ export function TerminalWindow({
 
   const onResizePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!resizeState.current) return
-    if (!(e.buttons & 1)) { // Ensure left button is pressed
-      resizeState.current = null
-      return
-    }
     const dw = e.clientX - resizeState.current.startX
     const dh = e.clientY - resizeState.current.startY
     onResize(
@@ -123,13 +115,13 @@ export function TerminalWindow({
       className={[styles.window, isActive ? styles.windowActive : ''].filter(Boolean).join(' ')}
       style={{ left: x, top: y, width, height, zIndex }}
       data-session={sessionId}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
     >
       {/* Title bar */}
       <div
         className={styles.titleBar}
         onPointerDown={(e) => { e.stopPropagation(); onPointerDown(e) }}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
         onClick={onFocus}
       >
         <span className={styles.titleText}>{title}</span>
