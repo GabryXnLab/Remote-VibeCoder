@@ -68,6 +68,20 @@ info "Installing git, tmux, curl, build-essential, ca-certificates, gnupg…"
 sudo apt-get install -y -qq git tmux curl build-essential ca-certificates gnupg
 success "System packages installed"
 
+# GitHub CLI
+if command -v gh &>/dev/null; then
+  success "GitHub CLI already installed: $(gh --version | head -n 1)"
+else
+  info "Installing GitHub CLI…"
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+  sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list
+  sudo apt-get update -qq && sudo apt-get install -y -qq gh
+  success "GitHub CLI installed: $(gh --version | head -n 1)"
+fi
+
 # ─── Step 2.5: Google Cloud SDK ──────────────────────────────────────────────
 header "Step 2.5 / 10 — Google Cloud SDK"
 if command -v gcloud &>/dev/null; then
@@ -129,9 +143,15 @@ success "nginx + certbot installed"
 
 # ─── Step 5: Development Tools ───────────────────────────────────────────────
 header "Step 5 / 10 — Development Tools"
+
+# Ensure nvm is active in this shell session (needed for npm install -g without sudo)
+export NVM_DIR="$HOME/.nvm"
+# shellcheck source=/dev/null
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
 info "Installing global npm packages (Claude Code, TypeScript, Vite, Clasp, etc.)…"
 
-# Core CLI (no sudo — nvm manages npm in user space)
+# Core CLI
 if command -v claude &>/dev/null; then
   success "Claude Code already installed: $(claude --version 2>/dev/null || echo 'unknown')"
 else
@@ -172,6 +192,10 @@ cd "$APP_DIR/server" && npm install
 
 info "Installing client dependencies…"
 cd "$APP_DIR/client-src" && npm install
+
+info "Building React frontend…"
+cd "$APP_DIR/client-src" && npm run build
+success "Frontend built"
 
 success "All dependencies installed"
 
