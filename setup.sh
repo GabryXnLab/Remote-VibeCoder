@@ -64,9 +64,30 @@ header "Step 2 / 10 — System Packages"
 info "Updating package lists…"
 sudo apt-get update -qq
 
-info "Installing git, tmux, curl, build-essential…"
-sudo apt-get install -y -qq git tmux curl build-essential
+info "Installing git, tmux, curl, build-essential, ca-certificates, gnupg…"
+sudo apt-get install -y -qq git tmux curl build-essential ca-certificates gnupg
 success "System packages installed"
+
+# ─── Step 2.5: Google Cloud SDK ──────────────────────────────────────────────
+header "Step 2.5 / 10 — Google Cloud SDK"
+if command -v gcloud &>/dev/null; then
+  success "Google Cloud SDK already installed: $(gcloud --version | head -n 1)"
+else
+  info "Installing Google Cloud CLI…"
+  # Import the Google Cloud public key
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg || true
+  # Add the gcloud CLI distribution URI as a package source
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+  # Update and install the gcloud CLI
+  sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-cli
+  success "Google Cloud CLI installed"
+fi
+
+info "Installing gcloud alpha and beta components…"
+# Install alpha/beta components (both via apt and gcloud to ensure availability)
+sudo apt-get install -y -qq google-cloud-cli-alpha google-cloud-cli-beta || true
+sudo gcloud components install alpha beta --quiet || warn "Could not install components via gcloud (this is expected if managed by apt)"
+success "Google Cloud SDK components (alpha/beta) ready"
 
 # ─── Step 3: Node.js LTS ─────────────────────────────────────────────────────
 header "Step 3 / 10 — Node.js LTS"
@@ -88,15 +109,23 @@ sudo systemctl enable nginx
 sudo systemctl start nginx
 success "nginx + certbot installed"
 
-# ─── Step 5: Claude Code ─────────────────────────────────────────────────────
-header "Step 5 / 10 — Claude Code CLI"
-if command -v claude &>/dev/null; then
-  success "Claude Code already installed: $(claude --version 2>/dev/null || echo 'unknown')"
-else
-  info "Installing @anthropic-ai/claude-code globally…"
+# ─── Step 5: Development Tools ───────────────────────────────────────────────
+header "Step 5 / 10 — Development Tools"
+info "Installing global npm packages (Claude Code, TypeScript, Vite, Clasp, etc.)…"
+
+# Core CLI
+if ! command -v claude &>/dev/null; then
   sudo npm install -g @anthropic-ai/claude-code
   success "Claude Code installed"
 fi
+
+# TypeScript & Build Tools
+sudo npm install -g typescript vite @google/clasp
+success "TypeScript, Vite, and Clasp installed"
+
+# QA Tools
+sudo npm install -g eslint prettier vitest
+success "ESLint, Prettier, and Vitest installed"
 
 # ─── Step 6: Clone / update app ──────────────────────────────────────────────
 header "Step 6 / 10 — App Files"
@@ -117,9 +146,13 @@ else
 fi
 
 info "Installing Node.js dependencies (this may take a few minutes)…"
-cd "$APP_DIR/server"
-npm install
-success "Dependencies installed"
+info "Installing server dependencies…"
+cd "$APP_DIR/server" && npm install
+
+info "Installing client dependencies…"
+cd "$APP_DIR/client-src" && npm install
+
+success "All dependencies installed"
 
 mkdir -p "$REPOS_DIR"
 success "Repos directory ready: $REPOS_DIR"
