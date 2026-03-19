@@ -1,0 +1,73 @@
+.selector {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.title { font-size: 14px; font-weight: 600; color: var(--text); }
+
+.closeBtn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+}
+
+.list { flex: 1; overflow-y: auto; }
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+.row:last-child { border-bottom: none; }
+
+.repoInfo { flex: 1; min-width: 0; }
+
+.repoName {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.selectBtn, .cloneBtn {
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+.selectBtn {
+  background: var(--accent-orange);
+  border: none;
+  color: #fff;
+  font-weight: 600;
+}
+.cloneBtn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.cloneBtn:disabled { opacity: 0.5; cursor: default; }
+
+.error {
+  padding: 12px 16px;
+  color: var(--danger);
+  font-size: 13px;
+}
