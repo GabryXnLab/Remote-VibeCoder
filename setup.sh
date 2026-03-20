@@ -166,9 +166,13 @@ if command -v gemini &>/dev/null; then
   success "Gemini CLI already installed: $(gemini --version 2>/dev/null || echo 'unknown')"
 else
   info "Installing @google/gemini-cli globally…"
-  sudo npm install -g @google/gemini-cli
+  npm install -g @google/gemini-cli
   success "Gemini CLI installed"
 fi
+
+# Create ~/.gemini directory to avoid initialization errors
+mkdir -p "$HOME_DIR/.gemini"
+success "Gemini config directory initialized"
 
 # TypeScript & Build Tools
 npm install -g typescript vite @google/clasp
