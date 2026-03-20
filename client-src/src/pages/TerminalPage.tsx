@@ -252,20 +252,58 @@ export function TerminalPage() {
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
-    // ── Mobile scroll: let xterm.js handle scrolling natively ──
-    // xterm.js v5 has built-in viewport scrolling. We just need to ensure
-    // the viewport element is touch-scrollable and nothing blocks it.
-    const xtermViewport = container.querySelector('.xterm-viewport') as HTMLElement | null
-    if (xtermViewport) {
-      xtermViewport.style.overflowY = 'scroll'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(xtermViewport.style as any).webkitOverflowScrolling = 'touch'
-      xtermViewport.style.touchAction = 'pan-y'
-    }
-    // Ensure the screen overlay doesn't block vertical touch panning
+    // ── Mobile touch scroll ──────────────────────────────────────────────
+    // xterm.js captures all touch events on .xterm-screen for mouse reporting
+    // and selection. We must intercept them BEFORE xterm with
+    // stopImmediatePropagation so the browser and xterm never see them.
+    // We then manually call term.scrollLines() to scroll the scrollback buffer.
     const xtermScreen = container.querySelector('.xterm-screen') as HTMLElement | null
     if (xtermScreen) {
-      xtermScreen.style.touchAction = 'pan-y pan-x'
+      let touchStartY = 0
+      let touchStartX = 0
+      let touchAccum  = 0
+      let scrollAxis: 'none' | 'vertical' | 'horizontal' = 'none'
+
+      xtermScreen.addEventListener('touchstart', (e: TouchEvent) => {
+        touchStartY = e.touches[0].clientY
+        touchStartX = e.touches[0].clientX
+        touchAccum  = 0
+        scrollAxis  = 'none'
+      }, { passive: true, capture: true })
+
+      xtermScreen.addEventListener('touchmove', (e: TouchEvent) => {
+        const currentY = e.touches[0].clientY
+        const currentX = e.touches[0].clientX
+        const deltaY   = touchStartY - currentY
+        const deltaX   = touchStartX - currentX
+
+        // Lock scroll axis on first significant movement
+        if (scrollAxis === 'none') {
+          if (Math.abs(deltaY) > 5 || Math.abs(deltaX) > 5) {
+            scrollAxis = Math.abs(deltaY) >= Math.abs(deltaX) ? 'vertical' : 'horizontal'
+          } else {
+            return // not enough movement yet
+          }
+        }
+
+        // Horizontal: let the browser handle it (wrapper has overflow-x: auto)
+        if (scrollAxis === 'horizontal') return
+
+        // Vertical: block xterm completely, scroll terminal ourselves
+        e.preventDefault()
+        e.stopImmediatePropagation()
+
+        touchStartY = currentY
+        touchAccum += deltaY
+        const lineHeight = term.options.fontSize
+          ? term.options.fontSize * (term.options.lineHeight ?? 1.3)
+          : 17
+        const lines = Math.trunc(touchAccum / lineHeight)
+        if (lines !== 0) {
+          term.scrollLines(lines)
+          touchAccum -= lines * lineHeight
+        }
+      }, { passive: false, capture: true })
     }
 
     const inst: TermInstance = {
