@@ -21,7 +21,8 @@ StandardOutput=journal
 StandardError=journal
 
 # Security hardening
-NoNewPrivileges=true
+# NOTE: NoNewPrivileges is intentionally absent — tmux child processes need to
+# be able to run sudo commands inside the terminal sessions.
 PrivateTmp=true
 ProtectSystem=strict
 # node-pty needs /dev/ptmx so PrivateDevices must NOT be set.

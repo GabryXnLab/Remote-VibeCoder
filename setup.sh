@@ -98,6 +98,16 @@ else
   success "Claude Code installed"
 fi
 
+# ─── Step 5b: Gemini CLI ─────────────────────────────────────────────────────
+header "Step 5b / 10 — Gemini CLI"
+if command -v gemini &>/dev/null; then
+  success "Gemini CLI already installed: $(gemini --version 2>/dev/null || echo 'unknown')"
+else
+  info "Installing @google/gemini-cli globally…"
+  sudo npm install -g @google/gemini-cli
+  success "Gemini CLI installed"
+fi
+
 # ─── Step 6: Clone / update app ──────────────────────────────────────────────
 header "Step 6 / 10 — App Files"
 if [ -d "$APP_DIR/.git" ]; then
