@@ -253,16 +253,16 @@ export function TerminalPage() {
     term.open(container)
 
     // ── Mobile touch scroll overlay ──────────────────────────────────────
-    // xterm.js has NO native touch scroll (known issue xtermjs#594, #5377).
-    // The .xterm-viewport (which scrolls) sits UNDER .xterm-screen in the DOM,
-    // so touch events never reach it. Attaching handlers on .xterm-screen also
-    // fails because xterm registers its own listeners first.
+    // xterm.js has NO native touch scroll (xtermjs#594, #5377), AND tmux uses
+    // the alternate screen buffer which makes xterm's own scrollback empty —
+    // so term.scrollLines() does nothing.
     //
-    // Solution: a transparent overlay div ON TOP of the terminal that:
-    //   - Captures vertical touch → term.scrollLines()
-    //   - Delegates horizontal touch to browser (touch-action: pan-x) for
-    //     wide terminal overflow scrolling
-    //   - Detects taps and forwards focus to the terminal
+    // On desktop, xterm translates wheel events into SGR mouse escape sequences
+    // that tmux understands. We replicate that: touch → SGR wheel sequences → WS.
+    //
+    // SGR mouse wheel format (mode 1006):
+    //   Scroll up:   \x1b[<64;COL;ROWM
+    //   Scroll down: \x1b[<65;COL;ROWM
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
       const overlay = document.createElement('div')
       overlay.style.cssText =
@@ -274,6 +274,18 @@ export function TerminalPage() {
       let touchAccum  = 0
       let isTap       = true
 
+      const sendWheelToTmux = (direction: 'up' | 'down', count: number) => {
+        const inst = termMapRef.current.get(sessionId)
+        const ws = inst?.ws
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        // SGR mouse: 64 = wheel up, 65 = wheel down; position 1;1 (tmux ignores it)
+        const btn = direction === 'up' ? 64 : 65
+        const seq = `\x1b[<${btn};1;1M`
+        for (let i = 0; i < count; i++) {
+          ws.send(seq)
+        }
+      }
+
       overlay.addEventListener('touchstart', (e: TouchEvent) => {
         touchStartY = e.touches[0].clientY
         touchAccum  = 0
@@ -284,14 +296,15 @@ export function TerminalPage() {
         e.preventDefault()
         isTap = false
         const currentY = e.touches[0].clientY
-        const deltaY   = touchStartY - currentY  // positive = scroll down
+        const deltaY   = touchStartY - currentY  // positive = finger up = scroll down (see older)
         touchStartY    = currentY
         touchAccum    += deltaY
         const lh = (term.options.fontSize || 13) * (term.options.lineHeight || 1.3)
-        const lines = Math.trunc(touchAccum / lh)
-        if (lines !== 0) {
-          term.scrollLines(lines)
-          touchAccum -= lines * lh
+        const lines = Math.abs(Math.trunc(touchAccum / lh))
+        if (lines > 0) {
+          // Finger moves up → deltaY > 0 → want to see OLDER content → scroll UP in tmux
+          sendWheelToTmux(touchAccum > 0 ? 'up' : 'down', lines)
+          touchAccum -= Math.trunc(touchAccum / lh) * lh
         }
       }, { passive: false })
 
