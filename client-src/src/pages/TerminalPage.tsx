@@ -252,45 +252,52 @@ export function TerminalPage() {
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
-    // ── Mobile touch scroll ──────────────────────────────────────────────
-    // xterm.js captures all touch events on .xterm-screen for mouse reporting
-    // and selection. We must intercept them BEFORE xterm with
-    // stopImmediatePropagation so the browser and xterm never see them.
-    // We then manually call term.scrollLines() to scroll the scrollback buffer.
-    const xtermScreen = container.querySelector('.xterm-screen') as HTMLElement | null
-    if (xtermScreen) {
-      // Tell browser: handle horizontal panning natively (for wide terminal overflow),
-      // but leave vertical to JS. This is critical — without it the browser takes over
-      // vertical gestures and scrolls the screen element (which has no overflow) = nothing.
-      xtermScreen.style.touchAction = 'pan-x'
+    // ── Mobile touch scroll overlay ──────────────────────────────────────
+    // xterm.js has NO native touch scroll (known issue xtermjs#594, #5377).
+    // The .xterm-viewport (which scrolls) sits UNDER .xterm-screen in the DOM,
+    // so touch events never reach it. Attaching handlers on .xterm-screen also
+    // fails because xterm registers its own listeners first.
+    //
+    // Solution: a transparent overlay div ON TOP of the terminal that:
+    //   - Captures vertical touch → term.scrollLines()
+    //   - Delegates horizontal touch to browser (touch-action: pan-x) for
+    //     wide terminal overflow scrolling
+    //   - Detects taps and forwards focus to the terminal
+    if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+      const overlay = document.createElement('div')
+      overlay.style.cssText =
+        'position:absolute;inset:0;z-index:10;touch-action:pan-x;background:transparent;'
+      container.style.position = 'relative'
+      container.appendChild(overlay)
 
       let touchStartY = 0
       let touchAccum  = 0
+      let isTap       = true
 
-      xtermScreen.addEventListener('touchstart', (e: TouchEvent) => {
+      overlay.addEventListener('touchstart', (e: TouchEvent) => {
         touchStartY = e.touches[0].clientY
         touchAccum  = 0
-      }, { passive: true, capture: true })
+        isTap       = true
+      }, { passive: true })
 
-      xtermScreen.addEventListener('touchmove', (e: TouchEvent) => {
-        const currentY = e.touches[0].clientY
-        const deltaY   = touchStartY - currentY  // positive = finger moved up = scroll down
-
-        // Block xterm.js from seeing this event (mouse reporting, selection, etc.)
+      overlay.addEventListener('touchmove', (e: TouchEvent) => {
         e.preventDefault()
-        e.stopImmediatePropagation()
-
-        touchStartY = currentY
-        touchAccum += deltaY
-        const lineHeight = term.options.fontSize
-          ? term.options.fontSize * (term.options.lineHeight ?? 1.3)
-          : 17
-        const lines = Math.trunc(touchAccum / lineHeight)
+        isTap = false
+        const currentY = e.touches[0].clientY
+        const deltaY   = touchStartY - currentY  // positive = scroll down
+        touchStartY    = currentY
+        touchAccum    += deltaY
+        const lh = (term.options.fontSize || 13) * (term.options.lineHeight || 1.3)
+        const lines = Math.trunc(touchAccum / lh)
         if (lines !== 0) {
           term.scrollLines(lines)
-          touchAccum -= lines * lineHeight
+          touchAccum -= lines * lh
         }
-      }, { passive: false, capture: true })
+      }, { passive: false })
+
+      overlay.addEventListener('touchend', () => {
+        if (isTap) term.focus()
+      }, { passive: true })
     }
 
     const inst: TermInstance = {
