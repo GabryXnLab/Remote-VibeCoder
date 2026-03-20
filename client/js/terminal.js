@@ -427,64 +427,90 @@ function formatFileSize(bytes) {
 // Voice input setup removed as redundant
 
 // ─── Mobile touch scroll ──────────────────────────────────────────────
-// xterm.js renders .xterm-screen (position:absolute) on top of
-// .xterm-viewport (the real scrollable element with a spacer for
-// scrollback height).  On mobile, touches land on .xterm-screen and
-// never reach the viewport's native scroll.  We intercept touch events
-// on the screen element and manually translate them into viewport
-// scrollTop changes, with momentum/inertia for a native feel.
+// xterm.js renders only the visible rows and keeps the scrollback in
+// memory (virtual scroll).  On mobile, touches land on .xterm-screen
+// (position:absolute, on top of .xterm-viewport) and xterm v5.3.0
+// doesn't translate them into scroll.  Previous attempts failed because
+// they manipulated viewport.scrollTop directly — but xterm ignores
+// external scrollTop changes; its internal buffer position stays put.
+//
+// The fix: use xterm's own API  term.scrollLines(n)  which updates the
+// internal buffer position AND re-renders the correct rows.  We convert
+// touch pixel deltas into line counts using the actual rendered line
+// height, and add momentum/inertia for a native feel.
 function setupMobileTouchScroll() {
-  const screen   = document.querySelector('.xterm-screen');
-  const viewport = document.querySelector('.xterm-viewport');
-  if (!screen || !viewport) return;
+  const screenEl = document.querySelector('.xterm-screen');
+  if (!screenEl || !term) return;
 
-  let startY     = 0;
-  let lastY      = 0;
-  let scrolling  = false;
-  let velocityY  = 0;
-  let lastTime   = 0;
-  let momentumId = null;
+  let startY      = 0;
+  let lastY       = 0;
+  let scrolling   = false;
+  let accumulated = 0;          // sub-line pixel accumulator
+  let velocityPx  = 0;          // px per ms for momentum
+  let lastTime    = 0;
+  let momentumId  = null;
 
-  screen.addEventListener('touchstart', (e) => {
+  // Compute the rendered height of one terminal line.
+  function lineHeight() {
+    return screenEl.clientHeight / term.rows;
+  }
+
+  screenEl.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) return;
     startY = lastY = e.touches[0].clientY;
     lastTime = Date.now();
-    velocityY = 0;
-    scrolling = false;
+    velocityPx  = 0;
+    accumulated = 0;
+    scrolling   = false;
     if (momentumId) { cancelAnimationFrame(momentumId); momentumId = null; }
   }, { passive: true });
 
-  screen.addEventListener('touchmove', (e) => {
+  screenEl.addEventListener('touchmove', (e) => {
     if (e.touches.length !== 1) return;
     const currentY = e.touches[0].clientY;
-    const deltaY   = lastY - currentY;        // positive = scroll down
+    const deltaY   = lastY - currentY;        // positive = finger moves up = scroll down
     const now      = Date.now();
     const dt       = now - lastTime;
 
-    // Activate scrolling after a 10px vertical threshold to avoid
-    // interfering with taps or horizontal swipes.
+    // Activate after 10px vertical threshold to avoid interfering
+    // with taps or horizontal swipes.
     if (!scrolling && Math.abs(startY - currentY) > 10) {
       scrolling = true;
     }
 
     if (scrolling) {
-      viewport.scrollTop += deltaY;
-      if (dt > 0) velocityY = deltaY / dt;    // px per ms
+      accumulated += deltaY;
+      const lh    = lineHeight();
+      const lines = Math.trunc(accumulated / lh);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        accumulated -= lines * lh;
+      }
+      if (dt > 0) velocityPx = deltaY / dt;
       lastY    = currentY;
       lastTime = now;
-      e.preventDefault();                      // prevent page bounce
+      e.preventDefault();                      // prevent page bounce / pull-to-refresh
     }
   }, { passive: false });
 
-  screen.addEventListener('touchend', () => {
+  screenEl.addEventListener('touchend', () => {
     if (!scrolling) return;
     scrolling = false;
-    // Momentum / inertia scrolling
+    // Momentum / inertia: keep scrolling with decreasing velocity
+    let vel = velocityPx;                      // px per ms at release
     const friction = 0.95;
+    let residual = 0;
+
     function momentum() {
-      velocityY *= friction;
-      if (Math.abs(velocityY) < 0.01) return;
-      viewport.scrollTop += velocityY * 16;   // ≈ 1 frame at 60fps
+      vel *= friction;
+      if (Math.abs(vel) < 0.005) return;       // stop when negligible
+      residual += vel * 16;                    // ≈ 1 frame at 60 fps
+      const lh    = lineHeight();
+      const lines = Math.trunc(residual / lh);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        residual -= lines * lh;
+      }
       momentumId = requestAnimationFrame(momentum);
     }
     momentum();

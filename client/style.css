@@ -515,14 +515,6 @@ html, body {
 
 .xterm-viewport {
   background: transparent !important;
-  overflow-y: scroll !important;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* Let touch events pass through to our JS handler; don't let the screen
-   element block vertical panning from reaching the viewport. */
-.xterm-screen {
-  touch-action: pan-x;
 }
 
 /* Quick action toolbar */
