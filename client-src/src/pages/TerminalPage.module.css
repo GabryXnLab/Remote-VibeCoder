@@ -81,7 +81,7 @@
 }
 
 /* xterm overrides (global scope needed) */
-.terminalWrapper :global(.xterm) {
+:global(.xterm) {
   padding: 6px 12px;
   height: 100% !important;
 }
@@ -91,8 +91,9 @@
   padding: 6px 14px;
 }
 
-.terminalWrapper :global(.xterm-viewport) {
+:global(.xterm-viewport) {
   background: transparent !important;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Wrap mode — let xterm handle line breaks at viewport width */
@@ -597,9 +598,11 @@
 .mobileTermWrapper[data-mode="default"],
 .mobileTermWrapper[data-mode="zoom-out"] {
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
+  touch-action: auto;
 }
 
 .mobileTermWrapper[data-mode="adaptive"] {
-  overflow: hidden;
+  overflow: auto;
+  touch-action: auto;
 }

@@ -252,17 +252,15 @@ export function TerminalPage() {
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
+    // Allow vertical and horizontal scrolling via touch gestures
+    container.style.touchAction = 'auto'
+    container.style.webkitOverflowScrolling = 'touch'
+
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
       reconnTimer: null, reconnDelay: RECONNECT_BASE_MS, intentional: false,
     }
     termMapRef.current.set(sessionId, inst)
-
-    container.addEventListener('wheel', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      term.scrollLines(e.deltaY > 0 ? 3 : -3)
-    }, { capture: true, passive: false })
 
     const ro = new ResizeObserver(() => {
       try {
