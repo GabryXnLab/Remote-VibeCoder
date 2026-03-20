@@ -253,16 +253,55 @@ export function TerminalPage() {
     term.open(container)
 
     // Allow vertical and horizontal scrolling via touch gestures
-    container.style.touchAction = 'auto'
+    container.style.touchAction = 'manipulation'
     ;(container.style as any).webkitOverflowScrolling = 'touch'
 
-    // Force native scrolling on xterm viewport for mobile
-    const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null
-    if (viewport) {
-      viewport.style.overflowY = 'scroll'
-      viewport.style.overflowX = 'auto'
-      ;(viewport.style as any).webkitOverflowScrolling = 'touch'
+    // Enable scrolling through terminal history via wheel/touch
+    let lastScrollTime = 0
+    const handleWheel = (e: WheelEvent) => {
+      // Debounce scroll events to prevent excessive updates
+      const now = Date.now()
+      if (now - lastScrollTime < 16) return // ~60fps
+      lastScrollTime = now
+
+      e.preventDefault()
+      const lines = Math.max(1, Math.round(Math.abs(e.deltaY) / 10))
+      if (e.deltaY > 0) {
+        term.scrollLines(lines)
+      } else {
+        term.scrollLines(-lines)
+      }
     }
+
+    container.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+
+    // Handle touch scroll for mobile
+    let touchStartY = 0
+    let lastTouchScrollTime = 0
+    const handleTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0].clientY
+    }
+    const handleTouchMove = (e: TouchEvent) => {
+      const now = Date.now()
+      if (now - lastTouchScrollTime < 16) return // ~60fps
+      lastTouchScrollTime = now
+
+      const touchCurrentY = e.touches[0].clientY
+      const deltaY = touchStartY - touchCurrentY
+
+      if (Math.abs(deltaY) > 5) { // Threshold to avoid accidental scrolls
+        const lines = Math.max(1, Math.round(Math.abs(deltaY) / 15))
+        if (deltaY > 0) {
+          term.scrollLines(lines)
+        } else {
+          term.scrollLines(-lines)
+        }
+        touchStartY = touchCurrentY // Update for continuous scrolling
+      }
+    }
+
+    container.addEventListener('touchstart', handleTouchStart, { passive: true })
+    container.addEventListener('touchmove', handleTouchMove, { passive: true })
 
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
