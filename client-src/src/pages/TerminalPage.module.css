@@ -93,6 +93,14 @@
 
 :global(.xterm-viewport) {
   background: transparent !important;
+  overflow-y: scroll !important;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+/* Let touch gestures pass through to viewport for scrolling */
+:global(.xterm-screen) {
+  touch-action: pan-y pan-x;
 }
 
 /* Wrap mode — let xterm handle line breaks at viewport width */
@@ -597,7 +605,7 @@
 .mobileTermWrapper[data-mode="default"],
 .mobileTermWrapper[data-mode="zoom-out"] {
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 
 .mobileTermWrapper[data-mode="adaptive"] {

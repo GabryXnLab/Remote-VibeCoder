@@ -252,46 +252,21 @@ export function TerminalPage() {
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
-    // ── Touch/wheel scroll: attach directly to xterm's internal elements ──
-    // xterm.js captures touch events on .xterm-screen, so we must hook there
-    const xtermScreen = container.querySelector('.xterm-screen') as HTMLElement | null
+    // ── Mobile scroll: let xterm.js handle scrolling natively ──
+    // xterm.js v5 has built-in viewport scrolling. We just need to ensure
+    // the viewport element is touch-scrollable and nothing blocks it.
     const xtermViewport = container.querySelector('.xterm-viewport') as HTMLElement | null
-    const scrollTarget = xtermScreen || container
-
-    // Override xterm's touch-action so the browser delivers touch events to JS
-    scrollTarget.style.touchAction = 'pan-x'
-    if (xtermViewport) xtermViewport.style.touchAction = 'pan-x'
-
-    // Wheel scroll (desktop / trackpad)
-    container.addEventListener('wheel', (e: WheelEvent) => {
-      e.preventDefault()
-      const lines = Math.max(1, Math.round(Math.abs(e.deltaY) / 10))
-      term.scrollLines(e.deltaY > 0 ? lines : -lines)
-    }, { passive: false, capture: true })
-
-    // Touch scroll (mobile finger gesture)
-    let touchStartY = 0
-    let touchAccum  = 0  // sub-line accumulator for smooth scrolling
-
-    scrollTarget.addEventListener('touchstart', (e: TouchEvent) => {
-      touchStartY = e.touches[0].clientY
-      touchAccum  = 0
-    }, { passive: true, capture: true })
-
-    scrollTarget.addEventListener('touchmove', (e: TouchEvent) => {
-      e.preventDefault()  // prevent xterm from handling this
-      const currentY = e.touches[0].clientY
-      const deltaY   = touchStartY - currentY  // positive = scroll down
-      touchStartY    = currentY
-
-      touchAccum += deltaY
-      const lineHeight = 15  // approximate pixel height per terminal line
-      const lines = Math.trunc(touchAccum / lineHeight)
-      if (lines !== 0) {
-        term.scrollLines(lines)
-        touchAccum -= lines * lineHeight  // keep remainder for smooth feel
-      }
-    }, { passive: false, capture: true })
+    if (xtermViewport) {
+      xtermViewport.style.overflowY = 'scroll'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(xtermViewport.style as any).webkitOverflowScrolling = 'touch'
+      xtermViewport.style.touchAction = 'pan-y'
+    }
+    // Ensure the screen overlay doesn't block vertical touch panning
+    const xtermScreen = container.querySelector('.xterm-screen') as HTMLElement | null
+    if (xtermScreen) {
+      xtermScreen.style.touchAction = 'pan-y pan-x'
+    }
 
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
