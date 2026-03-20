@@ -252,56 +252,46 @@ export function TerminalPage() {
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
-    // Allow vertical and horizontal scrolling via touch gestures
-    container.style.touchAction = 'manipulation'
-    ;(container.style as any).webkitOverflowScrolling = 'touch'
+    // ── Touch/wheel scroll: attach directly to xterm's internal elements ──
+    // xterm.js captures touch events on .xterm-screen, so we must hook there
+    const xtermScreen = container.querySelector('.xterm-screen') as HTMLElement | null
+    const xtermViewport = container.querySelector('.xterm-viewport') as HTMLElement | null
+    const scrollTarget = xtermScreen || container
 
-    // Enable scrolling through terminal history via wheel/touch
-    let lastScrollTime = 0
-    const handleWheel = (e: WheelEvent) => {
-      // Debounce scroll events to prevent excessive updates
-      const now = Date.now()
-      if (now - lastScrollTime < 16) return // ~60fps
-      lastScrollTime = now
+    // Override xterm's touch-action so the browser delivers touch events to JS
+    scrollTarget.style.touchAction = 'pan-x'
+    if (xtermViewport) xtermViewport.style.touchAction = 'pan-x'
 
+    // Wheel scroll (desktop / trackpad)
+    container.addEventListener('wheel', (e: WheelEvent) => {
       e.preventDefault()
       const lines = Math.max(1, Math.round(Math.abs(e.deltaY) / 10))
-      if (e.deltaY > 0) {
-        term.scrollLines(lines)
-      } else {
-        term.scrollLines(-lines)
-      }
-    }
+      term.scrollLines(e.deltaY > 0 ? lines : -lines)
+    }, { passive: false, capture: true })
 
-    container.addEventListener('wheel', handleWheel, { passive: false, capture: true })
-
-    // Handle touch scroll for mobile
+    // Touch scroll (mobile finger gesture)
     let touchStartY = 0
-    let lastTouchScrollTime = 0
-    const handleTouchStart = (e: TouchEvent) => {
+    let touchAccum  = 0  // sub-line accumulator for smooth scrolling
+
+    scrollTarget.addEventListener('touchstart', (e: TouchEvent) => {
       touchStartY = e.touches[0].clientY
-    }
-    const handleTouchMove = (e: TouchEvent) => {
-      const now = Date.now()
-      if (now - lastTouchScrollTime < 16) return // ~60fps
-      lastTouchScrollTime = now
+      touchAccum  = 0
+    }, { passive: true, capture: true })
 
-      const touchCurrentY = e.touches[0].clientY
-      const deltaY = touchStartY - touchCurrentY
+    scrollTarget.addEventListener('touchmove', (e: TouchEvent) => {
+      e.preventDefault()  // prevent xterm from handling this
+      const currentY = e.touches[0].clientY
+      const deltaY   = touchStartY - currentY  // positive = scroll down
+      touchStartY    = currentY
 
-      if (Math.abs(deltaY) > 5) { // Threshold to avoid accidental scrolls
-        const lines = Math.max(1, Math.round(Math.abs(deltaY) / 15))
-        if (deltaY > 0) {
-          term.scrollLines(lines)
-        } else {
-          term.scrollLines(-lines)
-        }
-        touchStartY = touchCurrentY // Update for continuous scrolling
+      touchAccum += deltaY
+      const lineHeight = 15  // approximate pixel height per terminal line
+      const lines = Math.trunc(touchAccum / lineHeight)
+      if (lines !== 0) {
+        term.scrollLines(lines)
+        touchAccum -= lines * lineHeight  // keep remainder for smooth feel
       }
-    }
-
-    container.addEventListener('touchstart', handleTouchStart, { passive: true })
-    container.addEventListener('touchmove', handleTouchMove, { passive: true })
+    }, { passive: false, capture: true })
 
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',

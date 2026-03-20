@@ -89,20 +89,10 @@
 /* More visible lateral padding on mobile */
 .mobileTermWrapper :global(.xterm) {
   padding: 6px 14px;
-  height: auto !important;
-  min-height: 100%;
-}
-
-/* Allow xterm-viewport to scroll with touch on mobile */
-.mobileTermWrapper :global(.xterm-viewport) {
-  max-height: 100%;
-  overflow-y: scroll !important;
 }
 
 :global(.xterm-viewport) {
   background: transparent !important;
-  overflow-y: scroll !important;
-  -webkit-overflow-scrolling: touch;
 }
 
 /* Wrap mode — let xterm handle line breaks at viewport width */
@@ -607,11 +597,9 @@
 .mobileTermWrapper[data-mode="default"],
 .mobileTermWrapper[data-mode="zoom-out"] {
   overflow-x: auto;
-  overflow-y: auto;
-  touch-action: auto;
+  overflow-y: hidden;
 }
 
 .mobileTermWrapper[data-mode="adaptive"] {
-  overflow: auto;
-  touch-action: auto;
+  overflow: hidden;
 }
