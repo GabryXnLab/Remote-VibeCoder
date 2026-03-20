@@ -259,37 +259,24 @@ export function TerminalPage() {
     // We then manually call term.scrollLines() to scroll the scrollback buffer.
     const xtermScreen = container.querySelector('.xterm-screen') as HTMLElement | null
     if (xtermScreen) {
+      // Tell browser: handle horizontal panning natively (for wide terminal overflow),
+      // but leave vertical to JS. This is critical — without it the browser takes over
+      // vertical gestures and scrolls the screen element (which has no overflow) = nothing.
+      xtermScreen.style.touchAction = 'pan-x'
+
       let touchStartY = 0
-      let touchStartX = 0
       let touchAccum  = 0
-      let scrollAxis: 'none' | 'vertical' | 'horizontal' = 'none'
 
       xtermScreen.addEventListener('touchstart', (e: TouchEvent) => {
         touchStartY = e.touches[0].clientY
-        touchStartX = e.touches[0].clientX
         touchAccum  = 0
-        scrollAxis  = 'none'
       }, { passive: true, capture: true })
 
       xtermScreen.addEventListener('touchmove', (e: TouchEvent) => {
         const currentY = e.touches[0].clientY
-        const currentX = e.touches[0].clientX
-        const deltaY   = touchStartY - currentY
-        const deltaX   = touchStartX - currentX
+        const deltaY   = touchStartY - currentY  // positive = finger moved up = scroll down
 
-        // Lock scroll axis on first significant movement
-        if (scrollAxis === 'none') {
-          if (Math.abs(deltaY) > 5 || Math.abs(deltaX) > 5) {
-            scrollAxis = Math.abs(deltaY) >= Math.abs(deltaX) ? 'vertical' : 'horizontal'
-          } else {
-            return // not enough movement yet
-          }
-        }
-
-        // Horizontal: let the browser handle it (wrapper has overflow-x: auto)
-        if (scrollAxis === 'horizontal') return
-
-        // Vertical: block xterm completely, scroll terminal ourselves
+        // Block xterm.js from seeing this event (mouse reporting, selection, etc.)
         e.preventDefault()
         e.stopImmediatePropagation()
 
