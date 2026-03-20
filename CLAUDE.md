@@ -55,14 +55,9 @@ Claude Code CLI (or shell)
 - `server/routes/repos.js` — GitHub API (Octokit), git clone/pull, directory tree, git status, commit+push, delete; PAT via GIT_ASKPASS temp file (never in `.git/config`); path traversal protection via `realpathSync()` + separator check
 - `server/routes/sessions.js` — tmux session lifecycle (CRUD); shell command whitelist for `?shell=true`
 
-**Frontend — two variants:**
-- `client/` — Vanilla JS, 3 pages (login → projects → terminal). No build step. Uses xterm.js v5.3.0 via CDN.
-  - `client/js/auth.js` — Login form handler
-  - `client/js/projects.js` — Repos/sessions list, clone/pull/commit UI, git status loader, commit modal
-  - `client/js/terminal.js` — xterm.js integration, WebSocket PTY, reconnect backoff, file drawer, theme toggle
-  - `client/js/voice.js` — Web Speech API wrapper (Italian, it-IT); not currently wired to UI
-  - `client/style.css` — Dark/light theme, mobile-first responsive layout, bottom-sheet modals
-- `client-src/` — Modern React 18 + TypeScript + Vite source. Compiles to `dist/`. Server serves `dist/` preferentially, falls back to `client/`.
+**Frontend:**
+- `client-src/` — React 18 + TypeScript + Vite. Compiles to `dist/`. Server serves `dist/` in production.
+- Legacy vanilla JS `client/` was removed from master (archived in branch `archive/legacy-vanilla-client`). **All frontend changes MUST go in `client-src/`.**
 
 ## API Endpoints
 
@@ -96,6 +91,49 @@ Claude Code CLI (or shell)
 - **Mobile UX:** 100dvh layout, virtual keyboard awareness, min 220 terminal columns, bottom-sheet modals, exponential backoff reconnect (1.5s → 30s), WebSocket heartbeat every 30s
 - **PAT security:** GitHub token passed only via GIT_ASKPASS temp file (0o600), never stored in `.git/config`
 - **Input validation on commit:** message max 2000 chars, file paths validated against repo root with `realpathSync()`, author fields stripped of control chars
+
+## xterm.js + tmux: Mobile Touch Interaction (Critical)
+
+This section documents a hard-won lesson that cost days of debugging. **Read carefully before touching any scroll/touch/input code.**
+
+### The Problem
+
+xterm.js has **no native touch scroll support** on mobile (open issues [#594](https://github.com/xtermjs/xterm.js/issues/594) since 2016, [#5377](https://github.com/xtermjs/xterm.js/issues/5377) since 2025). Desktop scroll works via mouse `wheel` events. Mobile touch doesn't work because:
+
+1. **DOM layering**: `.xterm-viewport` (which handles scrolling) sits UNDER `.xterm-screen` (which holds the canvas). Touch events hit `.xterm-screen` first and never reach the viewport.
+2. **Alternate screen buffer**: tmux activates the alternate screen buffer, which makes xterm.js's own scrollback buffer **empty**. So `term.scrollLines()` does absolutely nothing — there's nothing to scroll.
+3. **tmux mouse mode**: `pty.js` enables `tmux set-option mouse on`. On desktop, xterm translates wheel events into SGR mouse escape sequences that tmux understands. On mobile, this translation never happens because touch events don't reach xterm's wheel handler.
+
+### The Solution
+
+A **transparent overlay div** sits on top of the terminal (z-index: 10). It intercepts touch events and sends **SGR mouse wheel escape sequences** directly to tmux via WebSocket — the same sequences xterm sends on desktop for wheel events:
+
+```
+Scroll up (older content):   \x1b[<64;1;1M
+Scroll down (newer content): \x1b[<65;1;1M
+```
+
+The overlay:
+- Captures vertical touch → converts to SGR wheel sequences → sends via WS to tmux
+- Uses `touch-action: pan-x` so the browser handles horizontal panning natively (for wide terminal content)
+- Detects taps (short touch with no movement) and forwards `term.focus()` to open the keyboard
+- Uses natural scroll direction (finger down = see older content, like iOS/Android)
+
+### Rules for Future Mobile Touch/Scroll Work
+
+1. **NEVER use `term.scrollLines()`** for scrolling when tmux is running — alternate screen buffer makes it a no-op.
+2. **NEVER attach touch handlers to `.xterm-screen`** directly — xterm registers its own listeners first and they interfere. Use an overlay div ON TOP.
+3. **NEVER set CSS `touch-action: pan-y`** on xterm elements — it makes the browser take over vertical gestures and scroll a non-scrollable element (= nothing happens), while also preventing JS `preventDefault()` from working.
+4. To communicate scroll intent to tmux, **send SGR mouse escape sequences** (`\x1b[<64;col;rowM` / `\x1b[<65;col;rowM`) through the WebSocket, not through xterm's API.
+5. tmux `mouse on` (in `pty.js`) is required for this to work — do not remove it.
+6. The overlay is only created on touch-capable devices (`'ontouchstart' in window || navigator.maxTouchPoints > 0`).
+
+### Related: Frontend Build Pipeline
+
+- `client-src/` → Vite builds to `dist/` → server serves `dist/`
+- `.gitignore` excludes `dist/` — builds happen on the GCP VM during deploy
+- The GitHub Actions workflow (`deploy.yml`) runs `npm run build` on the VM before restarting the service
+- **All UI changes must be in `client-src/`**, not the removed `client/` directory
 
 ## Setup
 

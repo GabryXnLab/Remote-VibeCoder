@@ -302,8 +302,8 @@ export function TerminalPage() {
         const lh = (term.options.fontSize || 13) * (term.options.lineHeight || 1.3)
         const lines = Math.abs(Math.trunc(touchAccum / lh))
         if (lines > 0) {
-          // Finger moves up → deltaY > 0 → want to see OLDER content → scroll UP in tmux
-          sendWheelToTmux(touchAccum > 0 ? 'up' : 'down', lines)
+          // Natural scroll (like iOS/Android): finger moves down → see older content
+          sendWheelToTmux(touchAccum > 0 ? 'down' : 'up', lines)
           touchAccum -= Math.trunc(touchAccum / lh) * lh
         }
       }, { passive: false })

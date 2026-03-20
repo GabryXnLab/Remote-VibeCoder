@@ -39,8 +39,7 @@ Claude Code runs inside a named tmux session (`claude-{reponame}`). Closing your
 
 ```
 ├── setup.sh              # One-shot installer (Nginx + Certbot)
-├── client-src/           # Modern React + Vite frontend source
-├── client/               # Legacy/Fallback frontend (vanilla JS)
+├── client-src/           # React 18 + TypeScript + Vite frontend (builds to dist/)
 ├── server/
 │   ├── index.js          # Express + WebSocket server
 │   ├── pty.js            # node-pty ↔ tmux ↔ WebSocket bridge
