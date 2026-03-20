@@ -126,6 +126,7 @@ function initTerminal() {
     fitAddon.fit();
     if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows);
     setupMobileTouchScroll();
+    createMobileScrollbar();
     connect();
   });
 }
@@ -294,7 +295,13 @@ document.getElementById('btn-up').addEventListener('click',          () => { sen
 document.getElementById('btn-down').addEventListener('click',        () => { sendToWs('\x1b[B'); });
 document.getElementById('btn-left').addEventListener('click',        () => { sendToWs('\x1b[D'); });
 document.getElementById('btn-right').addEventListener('click',       () => { sendToWs('\x1b[C'); });
-document.getElementById('btn-scroll-bottom').addEventListener('click', () => { term.scrollToBottom(); });
+document.getElementById('btn-scroll-bottom').addEventListener('click', () => {
+  // Send 'q' to exit tmux copy-mode (returns to live terminal bottom).
+  // If not in copy-mode, 'q' is sent to the running program — harmless
+  // in most contexts (Claude Code prompt, bash).
+  sendToWs('q');
+  term.scrollToBottom();
+});
 document.getElementById('btn-refresh').addEventListener('click',     () => {
   sendResize();
   sendToWs('\r');
@@ -427,32 +434,47 @@ function formatFileSize(bytes) {
 // Voice input setup removed as redundant
 
 // ─── Mobile touch scroll ──────────────────────────────────────────────
-// xterm.js renders only the visible rows and keeps the scrollback in
-// memory (virtual scroll).  On mobile, touches land on .xterm-screen
-// (position:absolute, on top of .xterm-viewport) and xterm v5.3.0
-// doesn't translate them into scroll.  Previous attempts failed because
-// they manipulated viewport.scrollTop directly — but xterm ignores
-// external scrollTop changes; its internal buffer position stays put.
+// WHY PREVIOUS ATTEMPTS FAILED:
+// The terminal runs inside tmux, which uses the alternate screen buffer.
+// This means xterm.js only ever sees the current viewport — the entire
+// scrollback history lives inside tmux's buffer, NOT in xterm.js.
+// Calling term.scrollLines() or manipulating viewport.scrollTop does
+// nothing because xterm's buffer is empty.
 //
-// The fix: use xterm's own API  term.scrollLines(n)  which updates the
-// internal buffer position AND re-renders the correct rows.  We convert
-// touch pixel deltas into line counts using the actual rendered line
-// height, and add momentum/inertia for a native feel.
+// THE FIX:
+// 1. The server enables tmux mouse mode (set mouse on) in pty.js
+// 2. We convert touch gestures into SGR mouse-wheel escape sequences
+//    (\x1b[<64;1;1M for scroll-up, \x1b[<65;1;1M for scroll-down)
+// 3. We send these directly through the WebSocket to the PTY
+// 4. tmux receives them, enters copy-mode, and scrolls its buffer
+// 5. tmux redraws the pane → PTY → WebSocket → xterm.js displays it
 function setupMobileTouchScroll() {
   const screenEl = document.querySelector('.xterm-screen');
-  if (!screenEl || !term) return;
+  if (!screenEl) return;
 
   let startY      = 0;
   let lastY       = 0;
   let scrolling   = false;
-  let accumulated = 0;          // sub-line pixel accumulator
-  let velocityPx  = 0;          // px per ms for momentum
+  let accumulated = 0;
+  let velocityPx  = 0;
   let lastTime    = 0;
   let momentumId  = null;
 
-  // Compute the rendered height of one terminal line.
   function lineHeight() {
     return screenEl.clientHeight / term.rows;
+  }
+
+  // Send SGR mouse-wheel escape sequences through WebSocket → PTY → tmux.
+  // SGR encoding (mode 1006): \x1b[<button;col;rowM
+  //   button 64 = scroll up,  button 65 = scroll down
+  function sendTmuxScroll(lines) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || lines === 0) return;
+    const btn = lines > 0 ? 65 : 64;   // positive = scroll down, negative = scroll up
+    const seq = '\x1b[<' + btn + ';1;1M';
+    const count = Math.abs(lines);
+    let batch = '';
+    for (let i = 0; i < count; i++) batch += seq;
+    ws.send(batch);
   }
 
   screenEl.addEventListener('touchstart', (e) => {
@@ -468,12 +490,10 @@ function setupMobileTouchScroll() {
   screenEl.addEventListener('touchmove', (e) => {
     if (e.touches.length !== 1) return;
     const currentY = e.touches[0].clientY;
-    const deltaY   = lastY - currentY;        // positive = finger moves up = scroll down
+    const deltaY   = lastY - currentY;        // positive = finger up = scroll down
     const now      = Date.now();
     const dt       = now - lastTime;
 
-    // Activate after 10px vertical threshold to avoid interfering
-    // with taps or horizontal swipes.
     if (!scrolling && Math.abs(startY - currentY) > 10) {
       scrolling = true;
     }
@@ -483,38 +503,127 @@ function setupMobileTouchScroll() {
       const lh    = lineHeight();
       const lines = Math.trunc(accumulated / lh);
       if (lines !== 0) {
-        term.scrollLines(lines);
+        sendTmuxScroll(lines);
         accumulated -= lines * lh;
       }
       if (dt > 0) velocityPx = deltaY / dt;
       lastY    = currentY;
       lastTime = now;
-      e.preventDefault();                      // prevent page bounce / pull-to-refresh
+      e.preventDefault();
     }
   }, { passive: false });
 
   screenEl.addEventListener('touchend', () => {
     if (!scrolling) return;
     scrolling = false;
-    // Momentum / inertia: keep scrolling with decreasing velocity
-    let vel = velocityPx;                      // px per ms at release
+    let vel = velocityPx;
     const friction = 0.95;
     let residual = 0;
 
     function momentum() {
       vel *= friction;
-      if (Math.abs(vel) < 0.005) return;       // stop when negligible
-      residual += vel * 16;                    // ≈ 1 frame at 60 fps
+      if (Math.abs(vel) < 0.005) return;
+      residual += vel * 16;
       const lh    = lineHeight();
       const lines = Math.trunc(residual / lh);
       if (lines !== 0) {
-        term.scrollLines(lines);
+        sendTmuxScroll(lines);
         residual -= lines * lh;
       }
       momentumId = requestAnimationFrame(momentum);
     }
     momentum();
   }, { passive: true });
+}
+
+// ─── Mobile scrollbar ────────────────────────────────────────────────
+// A visible, draggable scrollbar on the right edge of the terminal.
+// Since the scrollback lives in tmux (not xterm.js), the scrollbar
+// sends the same SGR mouse-wheel escape sequences as touch scroll.
+function createMobileScrollbar() {
+  const wrapper = document.querySelector('.terminal-wrapper');
+  if (!wrapper) return;
+
+  const track = document.createElement('div');
+  track.className = 'tmux-scrollbar-track';
+
+  const thumbUp = document.createElement('div');
+  thumbUp.className = 'tmux-scrollbar-zone tmux-scrollbar-up';
+  thumbUp.textContent = '▲';
+
+  const thumbDown = document.createElement('div');
+  thumbDown.className = 'tmux-scrollbar-zone tmux-scrollbar-down';
+  thumbDown.textContent = '▼';
+
+  track.appendChild(thumbUp);
+  track.appendChild(thumbDown);
+  wrapper.appendChild(track);
+
+  // Helper: send SGR scroll sequences
+  function sendScroll(lines) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || lines === 0) return;
+    const btn = lines > 0 ? 65 : 64;
+    const seq = '\x1b[<' + btn + ';1;1M';
+    let batch = '';
+    for (let i = 0; i < Math.abs(lines); i++) batch += seq;
+    ws.send(batch);
+  }
+
+  // Continuous scroll while holding a zone
+  let holdInterval = null;
+
+  function startHold(lines) {
+    sendScroll(lines);
+    holdInterval = setInterval(() => sendScroll(lines), 80);
+  }
+
+  function stopHold() {
+    if (holdInterval) { clearInterval(holdInterval); holdInterval = null; }
+  }
+
+  // Touch events for up zone
+  thumbUp.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startHold(-3);
+  }, { passive: false });
+
+  // Touch events for down zone
+  thumbDown.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startHold(3);
+  }, { passive: false });
+
+  document.addEventListener('touchend', stopHold);
+  document.addEventListener('touchcancel', stopHold);
+
+  // Also allow dragging along the track for variable-speed scroll
+  let dragging = false;
+  let dragLastY = 0;
+
+  track.addEventListener('touchstart', (e) => {
+    if (e.target === thumbUp || e.target === thumbDown) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = true;
+    dragLastY = e.touches[0].clientY;
+  }, { passive: false });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const currentY = e.touches[0].clientY;
+    const deltaY = dragLastY - currentY;
+    const lh = (wrapper.clientHeight / term.rows) || 16;
+    const lines = Math.trunc(deltaY / lh);
+    if (lines !== 0) {
+      sendScroll(lines);
+      dragLastY = currentY;
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchend', () => { dragging = false; });
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

@@ -100,6 +100,12 @@ function handlePtyUpgrade(ws, req) {
 
   console.log(`[pty] Attached to tmux session "${sessionName}" (pid ${ptyProcess.pid})`);
 
+  // Enable tmux mouse mode so the client can scroll the tmux scrollback
+  // buffer by sending SGR mouse-wheel escape sequences through the PTY.
+  execFile('tmux', ['set-option', '-t', sessionName, 'mouse', 'on'], { timeout: 3000 }, (err) => {
+    if (err) console.warn(`[pty] Could not enable tmux mouse for "${sessionName}":`, err.message);
+  });
+
   // ─── Scrollback buffering ──────────────────────────────────────────────────
   // Capture recent history from tmux before the PTY stream starts. Buffer
   // any early PTY output until the capture promise settles to avoid
