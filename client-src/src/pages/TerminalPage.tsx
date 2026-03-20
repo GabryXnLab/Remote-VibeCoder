@@ -254,7 +254,7 @@ export function TerminalPage() {
 
     // Allow vertical and horizontal scrolling via touch gestures
     container.style.touchAction = 'auto'
-    container.style.webkitOverflowScrolling = 'touch'
+    ;(container.style as any).webkitOverflowScrolling = 'touch'
 
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
