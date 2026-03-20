@@ -124,6 +124,7 @@ export function ProjectsPage() {
   const [commitAuthorEmail, setCommitAuthorEmail] = useState('')
   const [commitPush,        setCommitPush]        = useState(true)
   const [selectedFiles,     setSelectedFiles]     = useState<string[]>([])
+  const [commitBehind,      setCommitBehind]      = useState(0)
   const [commitLoading,     setCommitLoading]     = useState(false)
   const [commitError,       setCommitError]       = useState('')
 
@@ -352,6 +353,7 @@ export function ProjectsPage() {
   async function handleCommitFirst() {
     if (!conflictContext) return
     const repo = conflictContext.repoName
+    const behind = conflictContext.behind
     setConflictOpen(false)
     setPendingPullRepo(repo)
 
@@ -360,7 +362,7 @@ export function ProjectsPage() {
       const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/git-status`)
       if (!res.ok) throw new Error('Failed to load git status')
       const status = await res.json() as GitStatus
-      openCommitModal(repo, status)
+      openCommitModal(repo, status, behind)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load status')
       setPendingPullRepo(null)
@@ -403,11 +405,12 @@ export function ProjectsPage() {
 
   // ── Commit modal ─────────────────────────────────────────────────────────────
 
-  function openCommitModal(repo: string, gitStatus: GitStatus) {
+  function openCommitModal(repo: string, gitStatus: GitStatus, behind = 0) {
     setCommitRepo(repo)
     setCommitStatus(gitStatus)
     setCommitMsg('')
     setCommitError('')
+    setCommitBehind(behind)
     setCommitAuthorName(gitStatus.authorName ?? '')
     setCommitAuthorEmail(gitStatus.authorEmail ?? '')
     setCommitPush(!!gitStatus.tracking)
@@ -415,7 +418,7 @@ export function ProjectsPage() {
     setCommitOpen(true)
   }
 
-  async function openCommitModalForRepo(repo: string) {
+  async function openCommitModalForRepo(repo: string, knownBehind = 0) {
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/git-status`)
       if (!res.ok) throw new Error('Failed to load git status')
@@ -424,7 +427,7 @@ export function ProjectsPage() {
         setError('No changes to commit')
         return
       }
-      openCommitModal(repo, status)
+      openCommitModal(repo, status, knownBehind)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load status')
     }
@@ -434,6 +437,7 @@ export function ProjectsPage() {
     setCommitOpen(false)
     setCommitRepo('')
     setCommitStatus(null)
+    setCommitBehind(0)
   }
 
   function toggleAllFiles() {
@@ -474,6 +478,13 @@ export function ProjectsPage() {
       if (!res.ok) throw new Error(data.error ?? `Commit failed (${res.status})`)
 
       closeCommitModal()
+
+      // Optimistically mark repo as local-changes (or synced if pushed) while loadAll runs
+      setRepos(prev => prev.map(r =>
+        r.name === commitRepo
+          ? { ...r, gitStatus: undefined, syncState: commitPush ? 'synced' : 'local-changes' }
+          : r
+      ))
 
       // If this commit was triggered from conflict dialog, auto-pull after
       if (pendingPullRepo === commitRepo) {
@@ -551,7 +562,7 @@ export function ProjectsPage() {
               variant="git"
               size="sm"
               title={`${changeCount} uncommitted change${changeCount !== 1 ? 's' : ''} — click to commit`}
-              onClick={() => openCommitModalForRepo(repo.name)}
+              onClick={() => openCommitModalForRepo(repo.name, repo.syncStatus?.behind ?? 0)}
             >↑ {changeCount}</Button>
           )}
         </div>
@@ -685,6 +696,13 @@ export function ProjectsPage() {
       >
         {commitStatus && (
           <>
+            {/* Warning: remote has new commits, push will likely be rejected */}
+            {commitBehind > 0 && commitPush && (
+              <Alert variant="info" small style={{ marginBottom: 12 }}>
+                ⚠ Remote ha {commitBehind} commit più recenti. Il push potrebbe essere rifiutato — considera di fare prima un pull.
+              </Alert>
+            )}
+
             {/* Branch row */}
             <div className={styles.branchRow}>
               <span style={{ color: 'var(--text-dim)' }}>Branch:</span>

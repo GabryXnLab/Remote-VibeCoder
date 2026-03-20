@@ -256,14 +256,20 @@ router.post('/force-pull', async (req, res) => {
     const token = cfg.githubPat || process.env.GITHUB_PAT;
     const git   = simpleGit(resolved);
 
-    await git.reset(['--hard', 'HEAD']);
-    await git.clean('f', ['-d']);
+    // Determine current branch before fetching
+    const localStatus = await git.status();
+    const branch = localStatus.current || 'main';
 
-    const result = await withGitCredentials(token, resolved, (credGit) =>
-      credGit.pull()
+    // Fetch latest from remote (needs credentials)
+    await withGitCredentials(token, resolved, (credGit) =>
+      credGit.timeout({ block: 15000 }).fetch('origin')
     );
 
-    res.json({ ok: true, result });
+    // Hard-reset to remote state, discarding all local changes and commits
+    await git.reset(['--hard', `origin/${branch}`]);
+    await git.clean('f', ['-d']);
+
+    res.json({ ok: true });
   } catch (err) {
     console.error('[repos] force-pull error:', err);
     res.status(500).json({ error: err.message });
