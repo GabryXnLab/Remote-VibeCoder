@@ -42,3 +42,16 @@ export type { ConflictContext, ConflictWarningDialogProps } from './feedback/Con
 
 export { SettingsDropdown } from './ui/SettingsDropdown'
 export type { SettingsSection, SettingsDropdownProps } from './ui/SettingsDropdown'
+
+export { FileBrowser }      from './FileBrowser/FileBrowser'
+
+export { RepoSelector }     from './RepoSelector/RepoSelector'
+
+export { TerminalOpenMenu } from './TerminalOpenMenu/TerminalOpenMenu'
+
+export { TerminalSidebar }  from './TerminalSidebar/TerminalSidebar'
+
+export { TerminalWindow }   from './TerminalWindow/TerminalWindow'
+export type { WindowState } from './TerminalWindow/TerminalWindow'
+
+export { WindowManager }    from './WindowManager/WindowManager'

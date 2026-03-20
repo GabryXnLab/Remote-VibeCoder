@@ -64,19 +64,72 @@ header "Step 2 / 10 — System Packages"
 info "Updating package lists…"
 sudo apt-get update -qq
 
-info "Installing git, tmux, curl, build-essential…"
-sudo apt-get install -y -qq git tmux curl build-essential
+info "Installing git, tmux, curl, build-essential, ca-certificates, gnupg…"
+sudo apt-get install -y -qq git tmux curl build-essential ca-certificates gnupg
 success "System packages installed"
 
-# ─── Step 3: Node.js LTS ─────────────────────────────────────────────────────
-header "Step 3 / 10 — Node.js LTS"
-if command -v node &>/dev/null; then
-  NODE_VER=$(node --version)
-  success "Node.js already installed: $NODE_VER"
+# GitHub CLI
+if command -v gh &>/dev/null; then
+  success "GitHub CLI already installed: $(gh --version | head -n 1)"
 else
-  info "Installing Node.js LTS via NodeSource…"
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+  info "Installing GitHub CLI…"
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+  sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list
+  sudo apt-get update -qq && sudo apt-get install -y -qq gh
+  success "GitHub CLI installed: $(gh --version | head -n 1)"
+fi
+
+# ─── Step 2.5: Google Cloud SDK ──────────────────────────────────────────────
+header "Step 2.5 / 10 — Google Cloud SDK"
+if command -v gcloud &>/dev/null; then
+  success "Google Cloud SDK already installed: $(gcloud --version | head -n 1)"
+else
+  info "Installing Google Cloud CLI…"
+  # Import the Google Cloud public key
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg || true
+  # Add the gcloud CLI distribution URI as a package source
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+  # Update and install the gcloud CLI
+  sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-cli
+  success "Google Cloud CLI installed"
+fi
+
+info "Installing gcloud alpha and beta components…"
+# Install alpha/beta components (both via apt and gcloud to ensure availability)
+sudo apt-get install -y -qq google-cloud-cli-alpha google-cloud-cli-beta || true
+sudo gcloud components install alpha beta --quiet || warn "Could not install components via gcloud (this is expected if managed by apt)"
+success "Google Cloud SDK components (alpha/beta) ready"
+
+# ─── Step 3: Node.js LTS (via nvm, no sudo) ──────────────────────────────────
+header "Step 3 / 10 — Node.js LTS"
+export NVM_DIR="$HOME/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$NVM_DIR/nvm.sh"
+fi
+
+if command -v nvm &>/dev/null; then
+  success "nvm already installed: $(nvm --version)"
+else
+  info "Installing nvm…"
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+  # Load nvm for the rest of this script
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck source=/dev/null
+  source "$NVM_DIR/nvm.sh"
+  success "nvm installed"
+fi
+
+if command -v node &>/dev/null; then
+  success "Node.js already installed: $(node --version)"
+else
+  info "Installing Node.js LTS via nvm (no sudo)…"
+  nvm install --lts
+  nvm use --lts
+  nvm alias default 'lts/*'
   success "Node.js installed: $(node --version)"
 fi
 
@@ -88,13 +141,22 @@ sudo systemctl enable nginx
 sudo systemctl start nginx
 success "nginx + certbot installed"
 
-# ─── Step 5: Claude Code ─────────────────────────────────────────────────────
-header "Step 5 / 10 — Claude Code CLI"
+# ─── Step 5: Development Tools ───────────────────────────────────────────────
+header "Step 5 / 10 — Development Tools"
+
+# Ensure nvm is active in this shell session (needed for npm install -g without sudo)
+export NVM_DIR="$HOME/.nvm"
+# shellcheck source=/dev/null
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+info "Installing global npm packages (Claude Code, TypeScript, Vite, Clasp, etc.)…"
+
+# Core CLI
 if command -v claude &>/dev/null; then
   success "Claude Code already installed: $(claude --version 2>/dev/null || echo 'unknown')"
 else
   info "Installing @anthropic-ai/claude-code globally…"
-  sudo npm install -g @anthropic-ai/claude-code
+  npm install -g @anthropic-ai/claude-code
   success "Claude Code installed"
 fi
 
@@ -107,6 +169,14 @@ else
   sudo npm install -g @google/gemini-cli
   success "Gemini CLI installed"
 fi
+
+# TypeScript & Build Tools
+npm install -g typescript vite @google/clasp
+success "TypeScript, Vite, and Clasp installed"
+
+# QA Tools
+npm install -g eslint prettier vitest
+success "ESLint, Prettier, and Vitest installed"
 
 # ─── Step 6: Clone / update app ──────────────────────────────────────────────
 header "Step 6 / 10 — App Files"
@@ -127,9 +197,17 @@ else
 fi
 
 info "Installing Node.js dependencies (this may take a few minutes)…"
-cd "$APP_DIR/server"
-npm install
-success "Dependencies installed"
+info "Installing server dependencies…"
+cd "$APP_DIR/server" && npm install
+
+info "Installing client dependencies…"
+cd "$APP_DIR/client-src" && npm install
+
+info "Building React frontend…"
+cd "$APP_DIR/client-src" && npm run build
+success "Frontend built"
+
+success "All dependencies installed"
 
 mkdir -p "$REPOS_DIR"
 success "Repos directory ready: $REPOS_DIR"

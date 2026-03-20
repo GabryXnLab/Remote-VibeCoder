@@ -6,21 +6,32 @@ import { Terminal, type ITheme } from 'xterm'
 import 'xterm/css/xterm.css'
 import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
-import { Button, Spinner, StatusDot, SettingsDropdown } from '@/components'
-import { useTheme } from '@/hooks/useTheme'
-import { useVoice } from '@/hooks/useVoice'
+import {
+  Button, StatusDot, SettingsDropdown,
+} from '@/components'
+import { TerminalOpenMenu }  from '@/components/TerminalOpenMenu/TerminalOpenMenu'
+import { TerminalSidebar }   from '@/components/TerminalSidebar/TerminalSidebar'
+import { WindowManager }     from '@/components/WindowManager/WindowManager'
+import { useTheme }          from '@/hooks/useTheme'
+import { useVoice }          from '@/hooks/useVoice'
+import { useMobileLayout }   from '@/hooks/useMobileLayout'
+import { useSessions }       from '@/hooks/useSessions'
 import type { ConnectionState } from '@/types/common'
+import type { SessionMetadata } from '@/types/sessions'
 import styles from './TerminalPage.module.css'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
 const RECONNECT_BASE_MS = 1500
 const RECONNECT_MAX_MS  = 30000
 const RECONNECT_FACTOR  = 1.5
 const MIN_COLS          = 220
+const SESSION_POLL_MS   = 10000
+
+type DisplayMode = 'default' | 'adaptive' | 'zoom-out'
+const FONT_SIZE_NORMAL   = 13
+const FONT_SIZE_ZOOM_OUT = 8
 
 // ─── xterm themes ─────────────────────────────────────────────────────────────
-
 const XTERM_DARK: ITheme = {
   background: '#1a1a1a', foreground: '#e5e5e5',
   cursor: '#f59e0b', cursorAccent: '#1a1a1a',
@@ -31,7 +42,6 @@ const XTERM_DARK: ITheme = {
   brightYellow: '#fde047', brightBlue: '#60a5fa', brightMagenta: '#c084fc',
   brightCyan: '#22d3ee', brightWhite: '#f5f5f5',
 }
-
 const XTERM_LIGHT: ITheme = {
   background: '#f5f5f5', foreground: '#1a1a1a',
   cursor: '#b45309', cursorAccent: '#f5f5f5',
@@ -43,421 +53,364 @@ const XTERM_LIGHT: ITheme = {
   brightCyan: '#06b6d4', brightWhite: '#f5f5f5',
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type DisplayMode = 'raw' | 'wrap' | 'zoom'
-
-interface FileEntry {
-  name: string
-  type: 'file' | 'dir'
-  size?: number
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024)        return `${bytes}B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`
-  return `${(bytes / (1024 * 1024)).toFixed(1)}M`
+// ─── Per-session terminal instance ────────────────────────────────────────────
+interface TermInstance {
+  term:        Terminal
+  fit:         FitAddon
+  ws:          WebSocket | null
+  connState:   ConnectionState
+  reconnTimer: ReturnType<typeof setTimeout> | null
+  reconnDelay: number
+  intentional: boolean
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-
 export function TerminalPage() {
-  const navigate     = useNavigate()
-  const [params]     = useSearchParams()
-  const repo         = params.get('repo') ?? ''
+  const navigate      = useNavigate()
+  const [params]      = useSearchParams()
+  const isMobile      = useMobileLayout()
+  const { isDark, apply: applyTheme } = useTheme()
 
-  // ── State ──────────────────────────────────────────────────────────────────
+  const initialSession = params.get('session') ?? ''
+  const legacyRepo     = params.get('repo') ?? ''
 
-  const [connState,    setConnState]    = useState<ConnectionState>('connecting')
-  const [reconnectMsg, setReconnectMsg] = useState('Reconnecting…')
-  const [showOverlay,  setShowOverlay]  = useState(false)
-  const [drawerOpen,   setDrawerOpen]   = useState(false)
-  const [drawerPath,   setDrawerPath]   = useState('')
-  const [entries,      setEntries]      = useState<FileEntry[]>([])
-  const [drawerLoading,setDrawerLoading]= useState(false)
-  const [drawerError,  setDrawerError]  = useState('')
-  const [searchQuery,  setSearchQuery]  = useState('')
-  const [isActivity,   setIsActivity]   = useState(false)
+  const [activeSessionId, setActiveSessionId] = useState<string>(initialSession)
 
-  // Settings state (persisted)
+  // Map of sessionId → TermInstance (never triggers re-render)
+  const termMapRef      = useRef<Map<string, TermInstance>>(new Map())
+  // Map of sessionId → DOM container div
+  const containerMapRef = useRef<Map<string, HTMLDivElement>>(new Map())
+
+  const { sessions, fetchSessions, killSession } = useSessions()
+
+  const [sidebarOpen,   setSidebarOpen]   = useState(false)
+  const [openMenuOpen,  setOpenMenuOpen]  = useState(false)
   const [settingsOpen,  setSettingsOpen]  = useState(false)
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(() =>
+    (localStorage.getItem('vibecoder_display_mode') as DisplayMode) ?? 'default'
+  )
+  const displayModeRef = useRef<DisplayMode>(displayMode)
+  useEffect(() => { displayModeRef.current = displayMode }, [displayMode])
+
   const [showTextarea,  setShowTextarea]  = useState(() =>
     localStorage.getItem('vibecoder_textarea') === 'true'
   )
   const [textareaValue, setTextareaValue] = useState('')
-  const [displayMode,   setDisplayMode]   = useState<DisplayMode>(() =>
-    (localStorage.getItem('vibecoder_display_mode') as DisplayMode | null) ?? 'raw'
-  )
-  const [zoomScale, setZoomScale] = useState(1)
+  const [isActivity,    setIsActivity]    = useState(false)
+  const [connStates,    setConnStates]    = useState<Record<string, ConnectionState>>({})
 
-  // ── Refs ───────────────────────────────────────────────────────────────────
+  const activityTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const termPageRef        = useRef<HTMLDivElement>(null)
+  const textareaRef        = useRef<HTMLTextAreaElement>(null)
+  const activeSessionIdRef = useRef(activeSessionId)
+  useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
 
-  const termContainerRef  = useRef<HTMLDivElement>(null)
-  const termRef           = useRef<Terminal | null>(null)
-  const fitRef            = useRef<FitAddon | null>(null)
-  const wsRef             = useRef<WebSocket | null>(null)
-  const reconnTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const reconnDelayRef    = useRef(RECONNECT_BASE_MS)
-  const intentionalRef    = useRef(false)
-  const pathStackRef      = useRef<string[]>([])
-  const termPageRef       = useRef<HTMLDivElement>(null)
-  const activityTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const connStateRef      = useRef<ConnectionState>('connecting')
-  const displayModeRef    = useRef<DisplayMode>(displayMode)
-  const textareaRef       = useRef<HTMLTextAreaElement>(null)
-
-  // Keep refs in sync
-  useEffect(() => { connStateRef.current = connState },       [connState])
-  useEffect(() => { displayModeRef.current = displayMode },   [displayMode])
-
-  // Persist settings to localStorage
-  useEffect(() => { localStorage.setItem('vibecoder_textarea',     String(showTextarea)) }, [showTextarea])
-  useEffect(() => { localStorage.setItem('vibecoder_display_mode', displayMode) },          [displayMode])
-
-  // ── Hooks ──────────────────────────────────────────────────────────────────
-
-  const { isDark, apply: applyTheme } = useTheme()
-
-  // ── Core functions (stable refs to avoid stale closures) ──────────────────
-
-  const sendToWs = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data)
-  }, [])
-
-  const sendResize = useCallback(() => {
-    const ws   = wsRef.current
-    const term = termRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN || !term) return
-    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-  }, [])
-
-  // Compute zoom scale from .xterm-screen element width vs wrapper width
-  const updateZoomScale = useCallback(() => {
-    const wrapper = termContainerRef.current?.parentElement
-    const screen  = termContainerRef.current?.querySelector('.xterm-screen') as HTMLElement | null
-    if (!wrapper || !screen) return
-    const wrapperW  = wrapper.clientWidth
-    const contentW  = screen.offsetWidth
-    if (contentW > 0 && wrapperW > 0) {
-      setZoomScale(Math.min(1, wrapperW / contentW))
-    }
-  }, [])
-
-  const fitAndResize = useCallback(() => {
-    const mode = displayModeRef.current
-    try {
-      fitRef.current?.fit()
-      const term = termRef.current
-      if (term && mode !== 'wrap') {
-        if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
-      }
-      sendResize()
-    } catch { /* noop */ }
-    // Zoom scale: computed after layout via rAF
-    if (mode === 'zoom') {
-      requestAnimationFrame(updateZoomScale)
-    } else {
-      setZoomScale(1)
-    }
-  }, [sendResize, updateZoomScale])
-
-  const onTerminalData = useCallback(() => {
-    setIsActivity(true)
-    if (activityTimerRef.current) clearTimeout(activityTimerRef.current)
-    activityTimerRef.current = setTimeout(() => setIsActivity(false), 1000)
-  }, [])
-
-  const hideOverlay = useCallback(() => setShowOverlay(false), [])
-
-  const scheduleReconnect = useCallback((connectFn: () => void) => {
-    if (reconnTimerRef.current) clearTimeout(reconnTimerRef.current)
-    const delay = reconnDelayRef.current
-    reconnDelayRef.current = Math.min(delay * RECONNECT_FACTOR, RECONNECT_MAX_MS)
-    setShowOverlay(true)
-    setReconnectMsg(`Disconnected — reconnecting in ${Math.round(delay / 1000)}s…`)
-    reconnTimerRef.current = setTimeout(connectFn, delay)
-  }, [])
-
-  // ── WebSocket connect ──────────────────────────────────────────────────────
-
-  const connect = useCallback(() => {
-    const ws = wsRef.current
-    if (ws) {
-      ws.onclose = null
-      ws.onerror = null
-      try { ws.close() } catch { /* noop */ }
-      wsRef.current = null
-    }
-
-    setConnState('connecting')
-
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const url   = `${proto}//${window.location.host}/ws/pty/${encodeURIComponent(repo)}`
-    const newWs = new WebSocket(url)
-    newWs.binaryType = 'arraybuffer'
-    wsRef.current = newWs
-
-    newWs.onopen = () => {
-      setConnState('connected')
-      reconnDelayRef.current = RECONNECT_BASE_MS
-      hideOverlay()
-      sendResize()
-      setTimeout(() => sendResize(), 150)
-    }
-
-    newWs.onmessage = (e: MessageEvent) => {
-      const term = termRef.current
-      if (!term) return
-      if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data))
-      else                                term.write(e.data as string)
-      onTerminalData()
-      // Update zoom scale after new content (debounced via rAF)
-      if (displayModeRef.current === 'zoom') requestAnimationFrame(updateZoomScale)
-    }
-
-    newWs.onclose = (ev: CloseEvent) => {
-      if (intentionalRef.current) return
-      setConnState('disconnected')
-      termRef.current?.writeln(`\r\n\x1b[31m[disconnected — code ${ev.code}]\x1b[0m`)
-      scheduleReconnect(() => connect())
-    }
-
-    newWs.onerror = () => {
-      termRef.current?.writeln('\r\n\x1b[31m[WebSocket error — check server logs]\x1b[0m')
-    }
-  }, [repo, hideOverlay, sendResize, onTerminalData, scheduleReconnect, updateZoomScale])
-
-  // ── Terminal init + cleanup ────────────────────────────────────────────────
-
+  // Persist textarea preference
   useEffect(() => {
-    if (!repo) { navigate('/projects', { replace: true }); return }
+    localStorage.setItem('vibecoder_textarea', String(showTextarea))
+  }, [showTextarea])
 
-    // Auth check
+  // Persist display mode + apply to body for global CSS selectors
+  useEffect(() => {
+    localStorage.setItem('vibecoder_display_mode', displayMode)
+    document.body.dataset.displayMode = displayMode
+  }, [displayMode])
+
+  // Apply body dataset on first render
+  useEffect(() => {
+    document.body.dataset.displayMode = displayMode
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ── Auth guard ──────────────────────────────────────────────────────────────
+  useEffect(() => {
     fetch('/api/auth/me')
       .then(r => r.json())
       .then((d: { authenticated: boolean }) => {
         if (!d.authenticated) navigate('/', { replace: true })
       })
       .catch(() => navigate('/', { replace: true }))
+  }, [navigate])
 
-    const container = termContainerRef.current
+  // ── Handle legacy ?repo= param ──────────────────────────────────────────────
+  useEffect(() => {
+    if (initialSession || !legacyRepo) return
+    fetch(`/api/sessions/${encodeURIComponent(legacyRepo)}`, { method: 'POST' })
+      .then(r => r.json())
+      .then((d: { sessionId?: string }) => {
+        if (d.sessionId) {
+          setActiveSessionId(d.sessionId)
+          navigate(`/terminal?session=${encodeURIComponent(d.sessionId)}`, { replace: true })
+        }
+      })
+      .catch(() => { /* keep trying */ })
+  }, [legacyRepo, initialSession, navigate])
+
+  // ── Session polling ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    fetchSessions()
+    const id = setInterval(fetchSessions, SESSION_POLL_MS)
+    return () => clearInterval(id)
+  }, [fetchSessions])
+
+  // ── xterm theme update ──────────────────────────────────────────────────────
+  useEffect(() => {
+    termMapRef.current.forEach(({ term }) => {
+      term.options.theme = isDark ? XTERM_DARK : XTERM_LIGHT
+    })
+  }, [isDark])
+
+  // ── Re-fit all terminals when display mode changes ──────────────────────────
+  useEffect(() => {
+    termMapRef.current.forEach((inst) => {
+      try {
+        inst.term.options.fontSize = displayMode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
+        inst.fit.fit()
+        if (displayMode === 'default' && inst.term.cols < MIN_COLS) {
+          inst.term.resize(MIN_COLS, inst.term.rows)
+        }
+        const ws = inst.ws
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: inst.term.cols, rows: inst.term.rows }))
+        }
+      } catch { /* noop */ }
+    })
+  }, [displayMode])
+
+  // ── Helper: send to active session WS ──────────────────────────────────────
+  const sendToWs = useCallback((data: string) => {
+    const inst = termMapRef.current.get(activeSessionId)
+    if (inst?.ws?.readyState === WebSocket.OPEN) inst.ws.send(data)
+  }, [activeSessionId])
+
+  // ── Connect WS for a session ─────────────────────────────────────────────────
+  const connectSession = useCallback((sessionId: string, inst: TermInstance) => {
+    if (inst.ws) {
+      inst.ws.onclose = null
+      inst.ws.onerror = null
+      try { inst.ws.close() } catch { /* noop */ }
+      inst.ws = null
+    }
+
+    setConnStates(prev => ({ ...prev, [sessionId]: 'connecting' }))
+
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const url   = `${proto}//${window.location.host}/ws/pty/${encodeURIComponent(sessionId)}`
+    const ws    = new WebSocket(url)
+    ws.binaryType = 'arraybuffer'
+    inst.ws = ws
+
+    ws.onopen = () => {
+      inst.reconnDelay = RECONNECT_BASE_MS
+      setConnStates(prev => ({ ...prev, [sessionId]: 'connected' }))
+      const ws2 = inst.ws
+      if (ws2?.readyState === WebSocket.OPEN) {
+        ws2.send(JSON.stringify({ type: 'resize', cols: inst.term.cols, rows: inst.term.rows }))
+      }
+    }
+
+    ws.onmessage = (e: MessageEvent) => {
+      if (e.data instanceof ArrayBuffer) inst.term.write(new Uint8Array(e.data))
+      else inst.term.write(e.data as string)
+      if (sessionId === activeSessionIdRef.current) {
+        setIsActivity(true)
+        if (activityTimerRef.current) clearTimeout(activityTimerRef.current)
+        activityTimerRef.current = setTimeout(() => setIsActivity(false), 1000)
+      }
+    }
+
+    ws.onclose = (ev: CloseEvent) => {
+      if (inst.intentional) return
+      setConnStates(prev => ({ ...prev, [sessionId]: 'disconnected' }))
+      inst.term.writeln(`\r\n\x1b[31m[disconnected — code ${ev.code}]\x1b[0m`)
+      const delay = inst.reconnDelay
+      inst.reconnDelay = Math.min(delay * RECONNECT_FACTOR, RECONNECT_MAX_MS)
+      inst.reconnTimer = setTimeout(() => connectSession(sessionId, inst), delay)
+    }
+
+    ws.onerror = () => {
+      inst.term.writeln('\r\n\x1b[31m[WebSocket error]\x1b[0m')
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Create/attach terminal for a session ────────────────────────────────────
+  const mountTerminal = useCallback((sessionId: string, container: HTMLDivElement) => {
+    if (termMapRef.current.has(sessionId)) return
     if (!container) return
 
-    // Init xterm
     const term = new Terminal({
       theme:            isDark ? XTERM_DARK : XTERM_LIGHT,
       fontFamily:       "'JetBrains Mono', 'Fira Code', Consolas, monospace",
-      fontSize:         13,
+      fontSize:         displayModeRef.current === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL,
       lineHeight:       1.3,
       cursorBlink:      true,
       scrollback:       5000,
       allowProposedApi: true,
     })
-    const fitAddon = new FitAddon()
-    term.loadAddon(fitAddon)
+    const fit = new FitAddon()
+    term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
-    termRef.current = term
-    fitRef.current  = fitAddon
-
-    document.title = `${repo} — Remote VibeCoder`
-
-    // Desktop keyboard input
-    term.onData((data) => { wsRef.current?.readyState === WebSocket.OPEN && wsRef.current.send(data) })
-
-    // ResizeObserver on terminal wrapper
-    const wrapper = container.parentElement
-    let ro: ResizeObserver | null = null
-    if (wrapper) {
-      ro = new ResizeObserver(() => fitAndResize())
-      ro.observe(wrapper)
+    const inst: TermInstance = {
+      term, fit, ws: null, connState: 'connecting',
+      reconnTimer: null, reconnDelay: RECONNECT_BASE_MS, intentional: false,
     }
+    termMapRef.current.set(sessionId, inst)
 
-    // visualViewport for mobile (keep input bar above keyboard)
-    const termPage = termPageRef.current
-    let vpCleanup: (() => void) | null = null
-    if (window.visualViewport && termPage) {
-      const onViewport = () => {
-        if (window.visualViewport) {
-          termPage.style.height = window.visualViewport.height + 'px'
-          fitAndResize()
+    container.addEventListener('wheel', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      term.scrollLines(e.deltaY > 0 ? 3 : -3)
+    }, { capture: true, passive: false })
+
+    const ro = new ResizeObserver(() => {
+      try {
+        const mode = displayModeRef.current
+        term.options.fontSize = mode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
+        fit.fit()
+        if (mode === 'default' && term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
+        const ws = inst.ws
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
         }
+      } catch { /* noop */ }
+    })
+    const wrapper = container.parentElement
+    if (wrapper) ro.observe(wrapper)
+
+    term.onData((data) => {
+      if (activeSessionIdRef.current === sessionId) {
+        const ws = inst.ws
+        if (ws?.readyState === WebSocket.OPEN) ws.send(data)
       }
-      window.visualViewport.addEventListener('resize', onViewport)
-      vpCleanup = () => window.visualViewport?.removeEventListener('resize', onViewport)
-    }
-
-    // orientationchange
-    const onOrient = () => setTimeout(fitAndResize, 300)
-    window.addEventListener('orientationchange', onOrient)
-
-    // Boot: fit → connect
-    requestAnimationFrame(() => {
-      fitAddon.fit()
-      if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
-      connect()
     })
 
+    // ── Disable mobile keyboard autocomplete/autocorrect/prediction ────────────
+    const xtermTa = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null
+    if (xtermTa) {
+      xtermTa.setAttribute('autocomplete', 'off')
+      xtermTa.setAttribute('autocorrect', 'off')
+      xtermTa.setAttribute('autocapitalize', 'none')
+      xtermTa.setAttribute('spellcheck', 'false')
+      xtermTa.setAttribute('data-gramm', 'false')
+      xtermTa.setAttribute('data-gramm_editor', 'false')
+    }
+
+    connectSession(sessionId, inst)
+  }, [isDark, connectSession])
+
+  // ── Cleanup on unmount ───────────────────────────────────────────────────────
+  useEffect(() => {
     return () => {
-      intentionalRef.current = true
-      if (reconnTimerRef.current) clearTimeout(reconnTimerRef.current)
-      if (activityTimerRef.current) clearTimeout(activityTimerRef.current)
-      const ws = wsRef.current
-      if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close() } catch { /* noop */ } }
-      term.dispose()
-      ro?.disconnect()
-      vpCleanup?.()
-      window.removeEventListener('orientationchange', onOrient)
+      termMapRef.current.forEach((inst) => {
+        inst.intentional = true
+        if (inst.reconnTimer) clearTimeout(inst.reconnTimer)
+        if (inst.ws) { inst.ws.onclose = null; try { inst.ws.close() } catch { /* noop */ } }
+        inst.term.dispose()
+      })
+      termMapRef.current.clear()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repo]) // run once when repo is known
+  }, [])
 
-  // Update xterm theme when isDark changes (after initial mount)
+  // ── visualViewport (mobile keyboard) ────────────────────────────────────────
   useEffect(() => {
-    if (termRef.current) termRef.current.options.theme = isDark ? XTERM_DARK : XTERM_LIGHT
-  }, [isDark])
-
-  // Re-fit when display mode changes
-  useEffect(() => {
-    requestAnimationFrame(() => fitAndResize())
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayMode])
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'F') { e.preventDefault(); openDrawer() }
-      else if (e.ctrlKey && !e.shiftKey && e.key === 'k') {
-        e.preventDefault()
-        if (showTextarea) {
-          textareaRef.current?.focus()
-        } else {
-          document.querySelector<HTMLInputElement>('[data-mobile-input]')?.focus()
-        }
+    const page = termPageRef.current
+    if (!window.visualViewport || !page) return
+    const onVp = () => {
+      if (!window.visualViewport) return
+      const vv = window.visualViewport
+      // Shrink page to fit above keyboard
+      page.style.height = vv.height + 'px'
+      // Pin page to visual viewport when user scrolls with keyboard open
+      page.style.transform = `translateY(${vv.offsetTop}px)`
+      // Re-fit active terminal so content (including Claude Code prompt) renders correctly
+      const inst = termMapRef.current.get(activeSessionIdRef.current)
+      if (inst) {
+        try { inst.fit.fit() } catch { /* noop */ }
       }
-      else if (e.ctrlKey && !e.shiftKey && e.key === 'l') {
-        e.preventDefault()
-        termRef.current?.clear()
-        termRef.current?.scrollToTop()
-      }
-      else if (e.ctrlKey && e.shiftKey && e.key === 'X') { e.preventDefault(); sendToWs('\x03') }
     }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [sendToWs, showTextarea])
-
-  // ── Voice input ────────────────────────────────────────────────────────────
-  const voice = useVoice(useCallback((text: string) => sendToWs(text), [sendToWs]))
-
-  // ── Toolbar actions ────────────────────────────────────────────────────────
-
-  const handleReconnectNow = () => {
-    if (reconnTimerRef.current) clearTimeout(reconnTimerRef.current)
-    reconnDelayRef.current = RECONNECT_BASE_MS
-    connect()
-  }
-
-  const handleRefresh = () => {
-    sendResize()
-    sendToWs('\r')
-    termRef.current?.scrollToBottom()
-  }
-
-  const handleKillSession = async () => {
-    if (!confirm(`Kill tmux session claude-${repo}?\n\nClaude Code will be terminated.`)) return
-    intentionalRef.current = true
-    try {
-      await fetch(`/api/sessions/${encodeURIComponent(repo)}`, { method: 'DELETE' })
-    } catch { /* noop */ }
-    navigate('/projects', { replace: true })
-  }
-
-  // ── Textarea send ──────────────────────────────────────────────────────────
-
-  const handleTextareaSend = () => {
-    if (!textareaValue.trim()) return
-    sendToWs(textareaValue + '\r')
-    setTextareaValue('')
-    textareaRef.current?.focus()
-  }
-
-  const handleTextareaKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleTextareaSend()
+    window.visualViewport.addEventListener('resize', onVp)
+    window.visualViewport.addEventListener('scroll', onVp)
+    return () => {
+      window.visualViewport?.removeEventListener('resize', onVp)
+      window.visualViewport?.removeEventListener('scroll', onVp)
     }
-  }
+  }, [])
 
-  // ── File drawer ────────────────────────────────────────────────────────────
-
-  const openDrawer = useCallback(() => {
-    pathStackRef.current = []
-    setSearchQuery('')
-    setDrawerOpen(true)
-    loadDrawerPath('')
-  }, []) // loadDrawerPath is defined below; OK since it's called lazily
-
-  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
-
-  const loadDrawerPath = async (subpath: string) => {
-    setDrawerPath(subpath)
-    setDrawerLoading(true)
-    setDrawerError('')
-    setSearchQuery('')
-    setEntries([])
-    try {
-      const url = `/api/repos/${encodeURIComponent(repo)}/tree?path=${encodeURIComponent(subpath)}`
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`Server error ${res.status}`)
-      const { entries: data } = await res.json() as { entries: FileEntry[] }
-      setEntries(data ?? [])
-    } catch (err) {
-      setDrawerError(err instanceof Error ? err.message : 'Error loading directory')
-    } finally {
-      setDrawerLoading(false)
+  // ── Kill session ─────────────────────────────────────────────────────────────
+  const handleKillSession = useCallback(async (sessionId: string) => {
+    if (!confirm(`Kill terminal ${sessionId}?`)) return
+    const inst = termMapRef.current.get(sessionId)
+    if (inst) {
+      inst.intentional = true
+      if (inst.reconnTimer) clearTimeout(inst.reconnTimer)
+      if (inst.ws) { inst.ws.onclose = null; try { inst.ws.close() } catch { /* noop */ } }
+      inst.term.dispose()
+      termMapRef.current.delete(sessionId)
     }
-  }
-
-  const handleDrawerBack = () => {
-    const stack = pathStackRef.current
-    if (stack.length === 0) return
-    const prev = stack.pop() ?? ''
-    pathStackRef.current = stack
-    loadDrawerPath(prev)
-  }
-
-  const handleEntryClick = (entry: FileEntry) => {
-    if (entry.type === 'dir') {
-      const newPath = drawerPath ? `${drawerPath}/${entry.name}` : entry.name
-      pathStackRef.current = [...pathStackRef.current, drawerPath]
-      loadDrawerPath(newPath)
-    } else {
-      const fullPath = drawerPath ? `${drawerPath}/${entry.name}` : entry.name
-      sendToWs(fullPath)
-      closeDrawer()
+    await killSession(sessionId)
+    if (sessionId === activeSessionId) {
+      const remaining = sessions.filter(s => s.sessionId !== sessionId)
+      if (remaining.length > 0) setActiveSessionId(remaining[0].sessionId)
+      else navigate('/projects', { replace: true })
     }
-  }
+    fetchSessions()
+  }, [activeSessionId, sessions, killSession, fetchSessions, navigate])
 
-  const filteredEntries = entries.filter(e =>
-    e.name.toLowerCase().includes(searchQuery.toLowerCase().trim())
-  )
+  // ── Open a new session (from TerminalOpenMenu) ────────────────────────────────
+  const handleOpenSession = useCallback((sessionId: string) => {
+    setActiveSessionId(sessionId)
+    fetchSessions()
+  }, [fetchSessions])
 
-  // ── Settings sections ──────────────────────────────────────────────────────
+  // ── renderTerminal ────────────────────────────────────────────────────────────
+  const renderTerminal = useCallback((sessionId: string) => {
+    return (
+      <div
+        key={sessionId}
+        style={{ width: '100%', height: '100%' }}
+        ref={(el) => {
+          if (!el) return
+          if (!containerMapRef.current.has(sessionId)) {
+            containerMapRef.current.set(sessionId, el)
+            mountTerminal(sessionId, el)
+          }
+        }}
+      />
+    )
+  }, [mountTerminal])
+
+  // ── Toolbar helpers ───────────────────────────────────────────────────────────
+  const activeInst = termMapRef.current.get(activeSessionId)
+  const activeMeta = sessions.find((s: SessionMetadata) => s.sessionId === activeSessionId)
+  const connState  = connStates[activeSessionId] ?? 'connecting'
 
   const settingsSections = [
     {
       title: 'Tema',
       content: (
         <div className={styles.settingsSegmented}>
-          <button
-            className={[styles.segBtn, !isDark ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
-            onClick={() => { applyTheme(false); setSettingsOpen(false) }}
-          >☀ Giorno</button>
-          <button
-            className={[styles.segBtn, isDark ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
-            onClick={() => { applyTheme(true); setSettingsOpen(false) }}
-          >🌙 Notte</button>
+          <button className={[styles.segBtn, !isDark ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+            onClick={() => { applyTheme(false); setSettingsOpen(false) }}>☀ Giorno</button>
+          <button className={[styles.segBtn, isDark ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+            onClick={() => { applyTheme(true); setSettingsOpen(false) }}>🌙 Notte</button>
+        </div>
+      ),
+    },
+    {
+      title: 'Modalità visualizzazione',
+      content: (
+        <div className={styles.settingsSegmented}>
+          {(['default', 'adaptive', 'zoom-out'] as DisplayMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={[styles.segBtn, displayMode === mode ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
+              onClick={() => setDisplayMode(mode)}
+            >
+              {mode === 'default' ? 'Default' : mode === 'adaptive' ? 'Adaptive' : 'Zoom Out'}
+            </button>
+          ))}
         </div>
       ),
     },
@@ -469,60 +422,35 @@ export function TerminalPage() {
           <div
             className={[styles.switchTrack, showTextarea ? styles.switchTrackOn : ''].filter(Boolean).join(' ')}
             onClick={() => setShowTextarea(v => !v)}
-            role="switch"
-            aria-checked={showTextarea}
-            tabIndex={0}
+            role="switch" aria-checked={showTextarea} tabIndex={0}
             onKeyDown={e => { if (e.key === ' ' || e.key === 'Enter') setShowTextarea(v => !v) }}
-          >
-            <div className={styles.switchThumb} />
-          </div>
+          ><div className={styles.switchThumb} /></div>
         </label>
-      ),
-    },
-    {
-      title: 'Modalità terminale',
-      content: (
-        <div className={styles.settingsSegmented} style={{ flexDirection: 'column', gap: 4 }}>
-          {([ ['raw', 'Raw'], ['wrap', 'Adattiva'], ['zoom', 'Zoom Out'] ] as [DisplayMode, string][]).map(([mode, label]) => (
-            <button
-              key={mode}
-              className={[styles.segBtn, styles.segBtnFull, displayMode === mode ? styles.segBtnActive : ''].filter(Boolean).join(' ')}
-              onClick={() => { setDisplayMode(mode); setSettingsOpen(false) }}
-            >{label}</button>
-          ))}
-        </div>
       ),
     },
   ]
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-
   const statusLabel: Record<ConnectionState, string> = {
-    connecting:   'Connecting…',
-    connected:    'Connected',
-    disconnected: 'Disconnected',
+    connecting: 'Connecting…', connected: 'Connected', disconnected: 'Disconnected',
   }
 
-  // CSS classes for terminal wrapper based on display mode
-  const wrapperClasses = [
-    styles.terminalWrapper,
-    displayMode === 'wrap' ? styles.terminalWrapperWrap : '',
-    displayMode === 'zoom' ? styles.terminalWrapperZoom : '',
-  ].filter(Boolean).join(' ')
+  const voice = useVoice(useCallback((text: string) => sendToWs(text), [sendToWs]))
 
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className={styles.page} ref={termPageRef}>
 
       {/* Header */}
       <header className={styles.header}>
-        <Button
-          variant="secondary"
-          size="sm"
-          style={{ padding: '4px 10px' }}
-          onClick={() => navigate('/projects')}
-        >←</Button>
-        <span className={styles.title}>{repo ? `claude-${repo}` : 'Loading…'}</span>
-        <Button variant="toolbar" onClick={openDrawer}>Files</Button>
+        <Button variant="secondary" size="sm" style={{ padding: '4px 10px' }}
+          onClick={() => navigate('/projects')}>←</Button>
+
+        <span className={styles.title}>
+          {activeMeta?.label ?? activeSessionId ?? 'Terminal'}
+        </span>
+
+        <Button variant="toolbar" onClick={() => setOpenMenuOpen(true)}>+</Button>
+
         <SettingsDropdown
           open={settingsOpen}
           onToggle={() => setSettingsOpen(v => !v)}
@@ -530,180 +458,144 @@ export function TerminalPage() {
           sections={settingsSections}
           buttonTitle="Impostazioni"
         />
+
+        {isMobile && (
+          <Button variant="toolbar" onClick={() => setSidebarOpen(true)} title="Switch terminal">≡</Button>
+        )}
+
         <div className={styles.statusArea}>
           <StatusDot state={connState} activity={isActivity} />
           <span className={styles.statusText}>{statusLabel[connState]}</span>
         </div>
       </header>
 
-      {/* Terminal */}
-      <div className={wrapperClasses}>
-        <div
-          ref={termContainerRef}
-          className={styles.terminalContainer}
-          style={displayMode === 'zoom' ? { transform: `scale(${zoomScale})`, transformOrigin: 'top left' } : undefined}
-        />
-        {showOverlay && (
-          <div className={styles.reconnectOverlay}>
-            <Spinner size="md" />
-            <p className={styles.reconnectMessage}>{reconnectMsg}</p>
-            <Button variant="primary" size="sm" onClick={handleReconnectNow}>Reconnect now</Button>
+      {/* Main content area */}
+      <div className={styles.main}>
+        {isMobile ? (
+          <div className={styles.mobileTermWrapper} data-mode={displayMode}>
+            {activeSessionId && renderTerminal(activeSessionId)}
+            {sessions
+              .filter((s: SessionMetadata) => s.sessionId !== activeSessionId)
+              .map((s: SessionMetadata) => (
+                <div key={s.sessionId} style={{ display: 'none' }}>
+                  {renderTerminal(s.sessionId)}
+                </div>
+              ))
+            }
           </div>
+        ) : (
+          <WindowManager
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onActivate={(sessionId) => {
+            setActiveSessionId(sessionId)
+            setTimeout(() => {
+              const inst = termMapRef.current.get(sessionId)
+              inst?.term.focus()
+            }, 0)
+          }}
+            onClose={handleKillSession}
+            renderTerminal={renderTerminal}
+          />
         )}
       </div>
 
-      {/* Textarea input bar (mobile) */}
-      {showTextarea && (
+      {/* Textarea input bar */}
+      {showTextarea && isMobile && (
         <div className={styles.textareaBar}>
           <textarea
             ref={textareaRef}
             className={styles.textareaInput}
             value={textareaValue}
             onChange={e => setTextareaValue(e.target.value)}
-            onKeyDown={handleTextareaKey}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                sendToWs(textareaValue + '\r')
+                setTextareaValue('')
+              }
+            }}
             placeholder="Scrivi comando… (Invio per inviare)"
             rows={1}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
+            autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
           />
-          <button
-            className={styles.textareaSendBtn}
-            onClick={handleTextareaSend}
-            disabled={!textareaValue.trim()}
-          >Send</button>
+          <button className={styles.textareaSendBtn}
+            onClick={() => { sendToWs(textareaValue + '\r'); setTextareaValue('') }}
+            disabled={!textareaValue.trim()}>Send</button>
         </div>
       )}
 
-      {/* Toolbar */}
-      <div className={styles.toolbar}>
-
-        {/* Group 1 — Text control */}
-        <Button variant="toolbar" className={styles.tbEnter} onClick={() => sendToWs('\r')}>↵</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\x03')}>^C</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\t')}>Tab</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\x1b')}>Esc</Button>
-
-        <span className={styles.tbSep} />
-
-        {/* Group 2 — Arrow keys */}
-        <Button variant="toolbar" onClick={() => sendToWs('\x1b[A')}>↑</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\x1b[B')}>↓</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\x1b[D')}>←</Button>
-        <Button variant="toolbar" onClick={() => sendToWs('\x1b[C')}>→</Button>
-
-        <span className={styles.tbSep} />
-
-        {/* Group 3 — Utility */}
-        <Button variant="toolbar" onClick={() => termRef.current?.scrollToBottom()}>⬇</Button>
-        <Button variant="toolbar" onClick={handleRefresh}>↺</Button>
-
-        {/* Mic button — right-aligned, prominent */}
-        {voice.isSupported && (
-          <button
-            className={[
-              styles.micBtn,
-              voice.isRecording ? styles.micBtnRecording : '',
-              voice.isPending   ? styles.micBtnPending   : '',
-            ].filter(Boolean).join(' ')}
-            onClick={voice.toggle}
-            title={voice.isRecording ? 'Stop (tap to send)' : voice.isPending ? 'Requesting mic…' : 'Voice input'}
-            aria-label={voice.isRecording ? 'Stop voice input' : 'Start voice input'}
-            disabled={false}
-          >
-            {voice.isPending ? (
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="16" height="16" className={styles.micSpinner}>
-                <circle cx="12" cy="12" r="9" strokeDasharray="28 56" strokeLinecap="round"/>
-              </svg>
-            ) : voice.isRecording ? (
-              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                <rect x="6" y="6" width="12" height="12" rx="2"/>
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm-1 18.93V21h2v-1.07A8 8 0 0 0 20 12h-2a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93z"/>
-              </svg>
-            )}
-          </button>
-        )}
-
-        <Button
-          variant="toolbar"
-          onClick={handleKillSession}
-          style={{ marginLeft: voice.isSupported ? undefined : 'auto', flexShrink: 0, color: 'var(--danger)', borderColor: 'var(--danger)' }}
-        >Kill</Button>
-
-        {/* Voice error toast */}
-        {voice.error && (
-          <div className={styles.voiceToast}>{voice.error}</div>
-        )}
-
-        {/* Listening overlay — shown above toolbar while recording */}
-        {(voice.isRecording || voice.isPending) && (
-          <div className={styles.voiceListening}>
-            <span className={styles.voiceListeningDot} />
-            {voice.isPending
-              ? 'Richiesta permesso microfono…'
-              : voice.interimText
-                ? voice.interimText
-                : 'In ascolto…'
-            }
-          </div>
-        )}
-      </div>
-
-      {/* File drawer */}
-      <div className={[styles.fileDrawer, drawerOpen ? styles.fileDrawerOpen : ''].filter(Boolean).join(' ')}>
-        <div className={styles.drawerHandle} />
-        <div className={styles.drawerHeader}>
-          <Button
-            variant="toolbar"
-            onClick={handleDrawerBack}
-            disabled={pathStackRef.current.length === 0}
-          >← Back</Button>
-          <span className={styles.drawerPath}>{drawerPath ? '/' + drawerPath : '/'}</span>
-          <Button variant="toolbar" onClick={closeDrawer}>✕</Button>
-        </div>
-        <div className={styles.drawerSearch}>
-          <input
-            type="search"
-            className={styles.drawerSearchInput}
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search files…"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
-          />
-        </div>
-        <div className={styles.drawerList}>
-          {drawerLoading && (
-            <div className={styles.drawerStatus}><Spinner size="sm" label="Loading…" /></div>
-          )}
-          {drawerError && (
-            <div className={styles.drawerStatus} style={{ color: 'var(--danger)' }}>{drawerError}</div>
-          )}
-          {!drawerLoading && !drawerError && filteredEntries.map(entry => (
-            <div
-              key={entry.name}
-              className={[styles.fileEntry, entry.type === 'dir' ? styles.fileEntryDir : ''].filter(Boolean).join(' ')}
-              onClick={() => handleEntryClick(entry)}
+      {/* Toolbar (mobile only) */}
+      {isMobile && (
+        <div className={styles.toolbar}>
+          <Button variant="toolbar" className={styles.tbEnter} onClick={() => sendToWs('\r')}>↵</Button>
+          <Button variant="toolbar" onClick={() => sendToWs('\x03')}>^C</Button>
+          <Button variant="toolbar" onClick={() => sendToWs('\t')}>Tab</Button>
+          <Button variant="toolbar" onClick={() => sendToWs('\x1b')}>Esc</Button>
+          <span className={styles.tbSep} />
+          <Button variant="toolbar" onClick={() => sendToWs('\x1b[A')}>↑</Button>
+          <Button variant="toolbar" onClick={() => sendToWs('\x1b[B')}>↓</Button>
+          <Button variant="toolbar" onClick={() => sendToWs('\x1b[D')}>←</Button>
+          <Button variant="toolbar" onClick={() => sendToWs('\x1b[C')}>→</Button>
+          <span className={styles.tbSep} />
+          <Button variant="toolbar" onClick={() => activeInst?.term.scrollToBottom()}>⬇</Button>
+          <Button variant="toolbar"
+            onClick={() => {
+              const ws = activeInst?.ws
+              if (ws?.readyState === WebSocket.OPEN && activeInst) {
+                ws.send(JSON.stringify({ type: 'resize', cols: activeInst.term.cols, rows: activeInst.term.rows }))
+              }
+            }}>↺</Button>
+          {voice.isSupported && (
+            <button
+              className={[styles.micBtn, voice.isRecording ? styles.micBtnRecording : '', voice.isPending ? styles.micBtnPending : ''].filter(Boolean).join(' ')}
+              onClick={voice.toggle}
+              title={voice.isRecording ? 'Stop' : 'Voice input'}
             >
-              <span className={styles.fileEntryIcon}>{entry.type === 'dir' ? '▸' : '·'}</span>
-              <span className={styles.fileEntryName}>{entry.name}{entry.type === 'dir' ? '/' : ''}</span>
-              {entry.type === 'file' && entry.size != null && (
-                <span className={styles.fileEntrySize}>{formatFileSize(entry.size)}</span>
+              {voice.isPending ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="16" height="16" className={styles.micSpinner}>
+                  <circle cx="12" cy="12" r="9" strokeDasharray="28 56" strokeLinecap="round"/>
+                </svg>
+              ) : voice.isRecording ? (
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm-1 18.93V21h2v-1.07A8 8 0 0 0 20 12h-2a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93z"/></svg>
               )}
-            </div>
-          ))}
-          {!drawerLoading && !drawerError && filteredEntries.length === 0 && !searchQuery && (
-            <div className={styles.drawerStatus}>Empty directory</div>
+            </button>
           )}
+          {voice.error && <div className={styles.voiceToast}>{voice.error}</div>}
+          {(voice.isRecording || voice.isPending) && (
+            <div className={styles.voiceListening}>
+              <span className={styles.voiceListeningDot} />
+              {voice.isPending ? 'Richiesta permesso…' : voice.interimText || 'In ascolto…'}
+            </div>
+          )}
+          <Button variant="toolbar"
+            onClick={() => handleKillSession(activeSessionId)}
+            style={{ marginLeft: 'auto', flexShrink: 0, color: 'var(--danger)', borderColor: 'var(--danger)' }}>Kill</Button>
         </div>
-      </div>
+      )}
 
+      {/* Mobile sidebar */}
+      {isMobile && (
+        <TerminalSidebar
+          open={sidebarOpen}
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSwitch={(sid) => { setActiveSessionId(sid); setSidebarOpen(false) }}
+          onClose={(sid) => handleKillSession(sid)}
+          onDismiss={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* New terminal menu */}
+      <TerminalOpenMenu
+        open={openMenuOpen}
+        currentRepo={activeMeta?.repo ?? null}
+        currentSession={activeSessionId}
+        onClose={() => setOpenMenuOpen(false)}
+        onOpenSession={handleOpenSession}
+      />
     </div>
   )
 }

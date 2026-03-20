@@ -65,14 +65,14 @@ jobs:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: SERVICE_CHANGED
+          envs: SERVICE_CHANGED,GH_PAT
           script_stop: true
           script: |
             set -euo pipefail
 
             echo "── Pulling latest code ──"
-            git -C ~/claude-mobile fetch origin master
-            git -C ~/claude-mobile reset --hard origin/master
+            git -C ~/claude-mobile fetch "https://x-access-token:${GH_PAT}@github.com/GabryXn/Remote-VibeCoder.git" master
+            git -C ~/claude-mobile reset --hard FETCH_HEAD
 
             echo "── Installing server dependencies ──"
             cd ~/claude-mobile/server && npm install --omit=dev
@@ -105,3 +105,4 @@ jobs:
               || { echo "✗ Health check failed"; exit 1; }
         env:
           SERVICE_CHANGED: ${{ steps.changes.outputs.service_changed }}
+          GH_PAT: ${{ secrets.GITHUB_TOKEN }}
