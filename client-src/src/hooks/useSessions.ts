@@ -12,6 +12,18 @@ export function useSessions() {
   const [sessions,  setSessions]  = useState<SessionMetadata[]>([])
   const [loading,   setLoading]   = useState(false)
   const [error,     setError]     = useState<string | null>(null)
+  const [pendingSessions, setPendingSessions] = useState<Set<string>>(new Set())
+
+  const isExecuting = useCallback((sessionId: string) => pendingSessions.has(sessionId), [pendingSessions])
+
+  const setExecuting = useCallback((sessionId: string, state: boolean) => {
+    setPendingSessions(prev => {
+      const next = new Set(prev)
+      if (state) next.add(sessionId)
+      else next.delete(sessionId)
+      return next
+    })
+  }, [])
 
   const fetchSessions = useCallback(async () => {
     setLoading(true)
@@ -90,7 +102,7 @@ export function useSessions() {
   }, [])
 
   return {
-    sessions, loading, error,
+    sessions, loading, error, isExecuting, setExecuting,
     fetchSessions, createSession, createFreeSession, killSession, getSessionCwd,
   }
 }

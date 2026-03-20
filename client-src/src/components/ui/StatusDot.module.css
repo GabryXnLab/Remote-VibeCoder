@@ -8,6 +8,6 @@
 }
 
 .connected    { background: var(--success); box-shadow: 0 0 6px var(--success); }
-.connecting   { background: var(--accent-orange); animation: pulse 1s ease-in-out infinite; }
+.connecting   { background: var(--accent-orange); animation: status-dot-pulse 1.5s infinite; }
 .disconnected { background: var(--danger); }
-.activity     { animation: activity-pulse 0.35s ease-in-out 3; }
+.activity     { animation: activity-pulse 0.4s ease-out 3; }

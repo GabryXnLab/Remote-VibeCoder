@@ -13,7 +13,7 @@ import { TerminalOpenMenu }  from '@/components/TerminalOpenMenu/TerminalOpenMen
 import { TerminalSidebar }   from '@/components/TerminalSidebar/TerminalSidebar'
 import { WindowManager }     from '@/components/WindowManager/WindowManager'
 import { useTheme }          from '@/hooks/useTheme'
-import { useVoice }          from '@/hooks/useVoice'
+// useVoice removed — mic button now simulates Space hold for Claude Code voice mode
 import { useMobileLayout }   from '@/hooks/useMobileLayout'
 import { useSessions }       from '@/hooks/useSessions'
 import type { ConnectionState } from '@/types/common'
@@ -469,7 +469,30 @@ export function TerminalPage() {
     connecting: 'Connecting…', connected: 'Connected', disconnected: 'Disconnected',
   }
 
-  const voice = useVoice(useCallback((text: string) => sendToWs(text), [sendToWs]))
+  // ── Space-hold mic (simulates holding Space for Claude Code voice mode) ──
+  const [isHoldingSpace, setIsHoldingSpace] = useState(false)
+  const spaceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const startSpaceHold = useCallback(() => {
+    if (spaceIntervalRef.current) return // already holding
+    setIsHoldingSpace(true)
+    sendToWs(' ') // initial space keypress
+    // simulate key repeat after OS-like delay
+    const timeout = setTimeout(() => {
+      spaceIntervalRef.current = setInterval(() => sendToWs(' '), 50)
+    }, 400) // typical key repeat delay
+    // store timeout so we can clear it on release
+    spaceIntervalRef.current = timeout as unknown as ReturnType<typeof setInterval>
+  }, [sendToWs])
+
+  const stopSpaceHold = useCallback(() => {
+    if (spaceIntervalRef.current) {
+      clearTimeout(spaceIntervalRef.current as unknown as ReturnType<typeof setTimeout>)
+      clearInterval(spaceIntervalRef.current)
+      spaceIntervalRef.current = null
+    }
+    setIsHoldingSpace(false)
+  }, [])
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -581,28 +604,26 @@ export function TerminalPage() {
                 ws.send(JSON.stringify({ type: 'resize', cols: activeInst.term.cols, rows: activeInst.term.rows }))
               }
             }}>↺</Button>
-          {voice.isSupported && (
-            <button
-              className={[styles.micBtn, voice.isRecording ? styles.micBtnRecording : '', voice.isPending ? styles.micBtnPending : ''].filter(Boolean).join(' ')}
-              onClick={voice.toggle}
-              title={voice.isRecording ? 'Stop' : 'Voice input'}
-            >
-              {voice.isPending ? (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="16" height="16" className={styles.micSpinner}>
-                  <circle cx="12" cy="12" r="9" strokeDasharray="28 56" strokeLinecap="round"/>
-                </svg>
-              ) : voice.isRecording ? (
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm-1 18.93V21h2v-1.07A8 8 0 0 0 20 12h-2a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93z"/></svg>
-              )}
-            </button>
-          )}
-          {voice.error && <div className={styles.voiceToast}>{voice.error}</div>}
-          {(voice.isRecording || voice.isPending) && (
+          <button
+            className={[styles.micBtn, isHoldingSpace ? styles.micBtnRecording : ''].filter(Boolean).join(' ')}
+            onTouchStart={e => { e.preventDefault(); startSpaceHold() }}
+            onTouchEnd={e => { e.preventDefault(); stopSpaceHold() }}
+            onTouchCancel={stopSpaceHold}
+            onMouseDown={startSpaceHold}
+            onMouseUp={stopSpaceHold}
+            onMouseLeave={stopSpaceHold}
+            title="Hold for voice (Space)"
+          >
+            {isHoldingSpace ? (
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm-1 18.93V21h2v-1.07A8 8 0 0 0 20 12h-2a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.93z"/></svg>
+            )}
+          </button>
+          {isHoldingSpace && (
             <div className={styles.voiceListening}>
               <span className={styles.voiceListeningDot} />
-              {voice.isPending ? 'Richiesta permesso…' : voice.interimText || 'In ascolto…'}
+              Tieni premuto per dettare…
             </div>
           )}
           <Button variant="toolbar"
