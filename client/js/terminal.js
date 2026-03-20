@@ -100,7 +100,7 @@ function initTerminal() {
     fontSize:     13,
     lineHeight:   1.3,
     cursorBlink:  true,
-    scrollback:   5000,
+    scrollback:   10000,
     allowProposedApi: true,
   });
 
@@ -125,6 +125,7 @@ function initTerminal() {
   requestAnimationFrame(() => {
     fitAddon.fit();
     if (term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows);
+    setupMobileTouchScroll();
     connect();
   });
 }
@@ -424,6 +425,71 @@ function formatFileSize(bytes) {
 }
 
 // Voice input setup removed as redundant
+
+// ─── Mobile touch scroll ──────────────────────────────────────────────
+// xterm.js renders .xterm-screen (position:absolute) on top of
+// .xterm-viewport (the real scrollable element with a spacer for
+// scrollback height).  On mobile, touches land on .xterm-screen and
+// never reach the viewport's native scroll.  We intercept touch events
+// on the screen element and manually translate them into viewport
+// scrollTop changes, with momentum/inertia for a native feel.
+function setupMobileTouchScroll() {
+  const screen   = document.querySelector('.xterm-screen');
+  const viewport = document.querySelector('.xterm-viewport');
+  if (!screen || !viewport) return;
+
+  let startY     = 0;
+  let lastY      = 0;
+  let scrolling  = false;
+  let velocityY  = 0;
+  let lastTime   = 0;
+  let momentumId = null;
+
+  screen.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    startY = lastY = e.touches[0].clientY;
+    lastTime = Date.now();
+    velocityY = 0;
+    scrolling = false;
+    if (momentumId) { cancelAnimationFrame(momentumId); momentumId = null; }
+  }, { passive: true });
+
+  screen.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 1) return;
+    const currentY = e.touches[0].clientY;
+    const deltaY   = lastY - currentY;        // positive = scroll down
+    const now      = Date.now();
+    const dt       = now - lastTime;
+
+    // Activate scrolling after a 10px vertical threshold to avoid
+    // interfering with taps or horizontal swipes.
+    if (!scrolling && Math.abs(startY - currentY) > 10) {
+      scrolling = true;
+    }
+
+    if (scrolling) {
+      viewport.scrollTop += deltaY;
+      if (dt > 0) velocityY = deltaY / dt;    // px per ms
+      lastY    = currentY;
+      lastTime = now;
+      e.preventDefault();                      // prevent page bounce
+    }
+  }, { passive: false });
+
+  screen.addEventListener('touchend', () => {
+    if (!scrolling) return;
+    scrolling = false;
+    // Momentum / inertia scrolling
+    const friction = 0.95;
+    function momentum() {
+      velocityY *= friction;
+      if (Math.abs(velocityY) < 0.01) return;
+      viewport.scrollTop += velocityY * 16;   // ≈ 1 frame at 60fps
+      momentumId = requestAnimationFrame(momentum);
+    }
+    momentum();
+  }, { passive: true });
+}
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', initTerminal);
