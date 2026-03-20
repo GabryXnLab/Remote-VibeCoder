@@ -256,6 +256,14 @@ export function TerminalPage() {
     container.style.touchAction = 'auto'
     ;(container.style as any).webkitOverflowScrolling = 'touch'
 
+    // Force native scrolling on xterm viewport for mobile
+    const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null
+    if (viewport) {
+      viewport.style.overflowY = 'scroll'
+      viewport.style.overflowX = 'auto'
+      ;(viewport.style as any).webkitOverflowScrolling = 'touch'
+    }
+
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
       reconnTimer: null, reconnDelay: RECONNECT_BASE_MS, intentional: false,
@@ -367,7 +375,7 @@ export function TerminalPage() {
     return (
       <div
         key={sessionId}
-        style={{ width: '100%', height: '100%' }}
+        style={{ width: '100%', height: '100%', minHeight: 'auto' }}
         ref={(el) => {
           if (!el) return
           if (!containerMapRef.current.has(sessionId)) {

@@ -89,10 +89,19 @@
 /* More visible lateral padding on mobile */
 .mobileTermWrapper :global(.xterm) {
   padding: 6px 14px;
+  height: auto !important;
+  min-height: 100%;
+}
+
+/* Allow xterm-viewport to scroll with touch on mobile */
+.mobileTermWrapper :global(.xterm-viewport) {
+  max-height: 100%;
+  overflow-y: scroll !important;
 }
 
 :global(.xterm-viewport) {
   background: transparent !important;
+  overflow-y: scroll !important;
   -webkit-overflow-scrolling: touch;
 }
 
