@@ -7,7 +7,19 @@ Wants=network-online.target
 Type=simple
 User=%i
 WorkingDirectory=/home/%i/claude-mobile/server
-ExecStart=/usr/bin/node /home/%i/claude-mobile/server/index.js
+
+# ─── V8 / Node.js tuning for 1GB e2-micro ───────────────────────────────────
+# --max-old-space-size=256   Cap V8 heap at 256MB (default ~1.7GB would OOM)
+# --optimize-for-size        Prefer smaller code over faster JIT
+# --expose-gc                Allow resource-governor to trigger manual GC
+# --max-semi-space-size=2    Reduce young generation (default 16MB, wasteful here)
+ExecStart=/usr/bin/node \
+  --max-old-space-size=256 \
+  --optimize-for-size \
+  --expose-gc \
+  --max-semi-space-size=2 \
+  /home/%i/claude-mobile/server/index.js
+
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=60
@@ -15,12 +27,36 @@ StartLimitBurst=5
 
 Environment=NODE_ENV=production
 Environment=PORT=3000
+# UV_THREADPOOL_SIZE: default is 4, reduce to 2 to save memory on e2-micro
+# (dns lookups, fs operations — 2 is enough for single-user)
+Environment=UV_THREADPOOL_SIZE=2
 
 # Logging
 StandardOutput=journal
 StandardError=journal
+SyslogIdentifier=claude-mobile
 
-# Security hardening
+# ─── cgroup resource limits ──────────────────────────────────────────────────
+# MemoryHigh: soft limit — kernel throttles allocations above this
+# MemoryMax:  hard limit — OOM kill if exceeded (prefer controlled restart)
+# These leave ~500MB for tmux sessions, Claude Code CLI, git, etc.
+MemoryAccounting=true
+MemoryHigh=400M
+MemoryMax=512M
+
+# Limit child processes to prevent fork bombs or runaway PTY spawning
+TasksMax=200
+
+# Favor keeping this service alive when system OOM killer activates
+# (-1000 = never kill, 0 = neutral, 1000 = kill first)
+# We use -500: prefer to kill other things, but not immune
+OOMScoreAdjust=-500
+
+# I/O priority: slightly boost over default for responsive terminal
+IOSchedulingClass=best-effort
+IOSchedulingPriority=4
+
+# ─── Security hardening ─────────────────────────────────────────────────────
 # NOTE: NoNewPrivileges is intentionally absent — tmux child processes need to
 # be able to run sudo commands inside the terminal sessions.
 PrivateTmp=true
@@ -28,6 +64,9 @@ ProtectSystem=strict
 # node-pty needs /dev/ptmx so PrivateDevices must NOT be set.
 # All user-writable paths (repos, config, sessions, app) are under /home/%i.
 ReadWritePaths=/home/%i
+
+# Limit open file descriptors (default 1024 is fine, cap at 4096)
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target

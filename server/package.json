@@ -4,8 +4,8 @@
   "description": "Remote VibeCoder — Claude Code via smartphone browser",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "NODE_ENV=development node --watch index.js"
+    "start": "node --max-old-space-size=256 --optimize-for-size --expose-gc --max-semi-space-size=2 index.js",
+    "dev": "NODE_ENV=development node --max-old-space-size=256 --expose-gc --watch index.js"
   },
   "engines": {
     "node": ">=18.0.0"

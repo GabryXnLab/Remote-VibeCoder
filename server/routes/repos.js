@@ -2,6 +2,7 @@
 
 const express   = require('express');
 const fs        = require('fs');
+const fsp       = require('fs/promises');
 const path      = require('path');
 const os        = require('os');
 const crypto    = require('crypto');
@@ -11,6 +12,13 @@ const config    = require('../config');
 
 const router    = express.Router();
 const REPOS_DIR = path.join(os.homedir(), 'repos');
+
+// ─── GitHub repos cache ──────────────────────────────────────────────────────
+// Avoid re-fetching the full repo list from GitHub on every page load.
+// TTL: 2 minutes (short enough to pick up new repos quickly).
+let _reposCache     = null;
+let _reposCacheTime = 0;
+const REPOS_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
 function getOctokit() {
   const cfg   = config.get();
@@ -30,14 +38,6 @@ function ensureReposDir() {
   }
 }
 
-/**
- * Run a git operation with GitHub credentials provided via GIT_ASKPASS.
- * The token is written to a temporary file (never embedded in shell commands)
- * so it cannot be stolen via /proc or shell history.
- *
- * The remote URL stored in .git/config will be the plain HTTPS URL without
- * any credentials.
- */
 async function withGitCredentials(token, cwd, fn) {
   const tmpDir     = path.join(os.tmpdir(), `vc-cred-${crypto.randomBytes(8).toString('hex')}`);
   const tokenFile  = path.join(tmpDir, 'token');
@@ -45,9 +45,6 @@ async function withGitCredentials(token, cwd, fn) {
 
   fs.mkdirSync(tmpDir, { mode: 0o700 });
   fs.writeFileSync(tokenFile, token, { mode: 0o600 });
-  // The helper script answers both Username and Password prompts.
-  // For GitHub PAT auth the username can be anything non-empty; only the
-  // password (the PAT itself) matters.
   fs.writeFileSync(
     helperFile,
     `#!/bin/sh\ncase "$1" in *Username*) printf 'x-access-token';; *) cat "${tokenFile}";; esac\n`,
@@ -58,7 +55,7 @@ async function withGitCredentials(token, cwd, fn) {
     const git = simpleGit(cwd).env({
       ...process.env,
       GIT_ASKPASS:         helperFile,
-      GIT_TERMINAL_PROMPT: '0',   // Fail fast instead of hanging on prompt
+      GIT_TERMINAL_PROMPT: '0',
     });
     return await fn(git);
   } finally {
@@ -67,24 +64,32 @@ async function withGitCredentials(token, cwd, fn) {
 }
 
 // ─── GET /api/repos ───────────────────────────────────────────────────────────
-// List all of the authenticated user's GitHub repos (all pages) + local clone
-// status.
 router.get('/', async (req, res) => {
   try {
     const octokit  = getOctokit();
-    const username = getGithubUser();
 
-    // Paginate through ALL repos — octokit.paginate handles multiple requests.
-    const data = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
-      sort:        'updated',
-      affiliation: 'owner',
-    });
+    // Use cached GitHub data if fresh
+    let data;
+    if (_reposCache && Date.now() - _reposCacheTime < REPOS_CACHE_TTL) {
+      data = _reposCache;
+    } else {
+      // Fetch with per_page=100 (GitHub max). For users with <100 repos,
+      // this is a single API call. For more, paginate returns all.
+      data = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
+        sort:        'updated',
+        affiliation: 'owner',
+        per_page:    100,
+      });
+      _reposCache = data;
+      _reposCacheTime = Date.now();
+    }
 
     ensureReposDir();
+
+    // Use async readdir to avoid blocking the event loop
+    const dirEntries = await fsp.readdir(REPOS_DIR, { withFileTypes: true });
     const localDirs = new Set(
-      fs.readdirSync(REPOS_DIR).filter(d => {
-        try { return fs.statSync(path.join(REPOS_DIR, d)).isDirectory(); } catch { return false; }
-      })
+      dirEntries.filter(d => d.isDirectory()).map(d => d.name)
     );
 
     const repos = data.map(r => ({
@@ -118,7 +123,6 @@ router.post('/clone', async (req, res) => {
     const cfg      = config.get();
     const token    = cfg.githubPat || process.env.GITHUB_PAT;
 
-    // Verify ownership before cloning (security + better error messages)
     let repoData;
     try {
       const { data } = await octokit.repos.get({ owner: username, repo: name });
@@ -134,13 +138,14 @@ router.post('/clone', async (req, res) => {
       return res.status(409).json({ error: 'Repo already cloned', path: destPath });
     }
 
-    // Use clean HTTPS URL — no token embedded. Credentials are provided via
-    // GIT_ASKPASS so they never appear in .git/config.
     const cloneUrl = `https://github.com/${username}/${name}.git`;
 
     await withGitCredentials(token, REPOS_DIR, (git) =>
       git.clone(cloneUrl, destPath)
     );
+
+    // Invalidate repos cache so the clone status updates immediately
+    _reposCache = null;
 
     res.json({ ok: true, path: destPath, name, fullName: repoData.full_name });
   } catch (err) {
@@ -162,7 +167,6 @@ router.post('/pull', async (req, res) => {
   }
 
   try {
-    // Path traversal guard
     const resolved = fs.realpathSync(repoPath);
     if (!resolved.startsWith(REPOS_DIR)) {
       return res.status(400).json({ error: 'Invalid path' });
@@ -180,7 +184,6 @@ router.post('/pull', async (req, res) => {
 });
 
 // ─── GET /api/repos/:name/sync-status ─────────────────────────────────────────
-// Fetch from remote + compare local vs remote state
 router.get('/:name/sync-status', async (req, res) => {
   const { name } = req.params;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
@@ -201,12 +204,10 @@ router.get('/:name/sync-status', async (req, res) => {
     const cfg   = config.get();
     const token = cfg.githubPat || process.env.GITHUB_PAT;
 
-    // Fetch with credentials and a 10s timeout
     await withGitCredentials(token, resolved, (git) =>
       git.timeout({ block: 10000 }).fetch('origin', { '--prune': null })
     ).catch(err => {
       console.warn('[repos] sync-status fetch warning:', err.message);
-      // Continue anyway — status will reflect local state
     });
 
     const git = simpleGit(resolved);
@@ -234,7 +235,6 @@ router.get('/:name/sync-status', async (req, res) => {
 });
 
 // ─── POST /api/repos/force-pull ───────────────────────────────────────────────
-// Discard local changes and force pull from remote
 router.post('/force-pull', async (req, res) => {
   const { name } = req.body;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
@@ -256,11 +256,9 @@ router.post('/force-pull', async (req, res) => {
     const token = cfg.githubPat || process.env.GITHUB_PAT;
     const git   = simpleGit(resolved);
 
-    // Reset all local changes
     await git.reset(['--hard', 'HEAD']);
     await git.clean('f', ['-d']);
 
-    // Pull with credentials
     const result = await withGitCredentials(token, resolved, (credGit) =>
       credGit.pull()
     );
@@ -273,7 +271,7 @@ router.post('/force-pull', async (req, res) => {
 });
 
 // ─── GET /api/repos/:name/tree ────────────────────────────────────────────────
-router.get('/:name/tree', (req, res) => {
+router.get('/:name/tree', async (req, res) => {
   const { name } = req.params;
   if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
     return res.status(400).json({ error: 'Invalid repo name' });
@@ -290,29 +288,30 @@ router.get('/:name/tree', (req, res) => {
   try {
     const resolved     = fs.realpathSync(targetPath);
     const resolvedRoot = fs.realpathSync(repoRoot);
-    // Use separator-aware prefix check to avoid false positives like
-    // /repos/myrepo-evil matching prefix /repos/myrepo
     if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
 
-    const entries = fs.readdirSync(resolved, { withFileTypes: true })
-      .filter(e => e.name !== '.git')
-      .map(e => {
-        const stat = (() => {
-          try { return fs.statSync(path.join(resolved, e.name)); } catch { return null; }
-        })();
-        return {
-          name:     e.name,
-          type:     e.isDirectory() ? 'dir' : 'file',
-          size:     stat && !e.isDirectory() ? stat.size : undefined,
-          modified: stat ? stat.mtimeMs : undefined,
-        };
-      })
-      .sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+    // Use async readdir with file types to avoid blocking event loop
+    const dirEntries = await fsp.readdir(resolved, { withFileTypes: true });
+    const filtered = dirEntries.filter(e => e.name !== '.git');
+
+    // Batch stat calls with Promise.all instead of sync loop
+    const entries = await Promise.all(filtered.map(async (e) => {
+      let stat = null;
+      try { stat = await fsp.stat(path.join(resolved, e.name)); } catch {}
+      return {
+        name:     e.name,
+        type:     e.isDirectory() ? 'dir' : 'file',
+        size:     stat && !e.isDirectory() ? stat.size : undefined,
+        modified: stat ? stat.mtimeMs : undefined,
+      };
+    }));
+
+    entries.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
 
     res.json({ entries, path: rawSub });
   } catch (err) {
@@ -333,12 +332,12 @@ router.delete('/:name', (req, res) => {
   }
 
   try {
-    // Path traversal guard (defense-in-depth — name regex already prevents this)
     const resolved = fs.realpathSync(repoPath);
     if (resolved !== path.join(REPOS_DIR, name) && !resolved.startsWith(REPOS_DIR + path.sep)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
     fs.rmSync(repoPath, { recursive: true, force: true });
+    _reposCache = null; // Invalidate cache
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -399,7 +398,6 @@ router.post('/:name/commit', async (req, res) => {
 
   const { message, files, authorName, authorEmail, push: doPush } = req.body;
 
-  // Validate message
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'Commit message is required' });
   }
@@ -410,7 +408,6 @@ router.post('/:name/commit', async (req, res) => {
     return res.status(400).json({ error: 'Invalid characters in commit message' });
   }
 
-  // Validate files list
   if (!Array.isArray(files) || files.length === 0) {
     return res.status(400).json({ error: 'No files selected for commit' });
   }
@@ -420,7 +417,6 @@ router.post('/:name/commit', async (req, res) => {
     }
   }
 
-  // Validate optional author fields
   if (authorName !== undefined) {
     if (typeof authorName !== 'string' || authorName.length > 100 || /[\0\r\n]/.test(authorName)) {
       return res.status(400).json({ error: 'Invalid author name' });
@@ -443,7 +439,6 @@ router.post('/:name/commit', async (req, res) => {
       return res.status(400).json({ error: 'Invalid path' });
     }
 
-    // Validate every file path stays within the repo root
     for (const f of files) {
       const abs = path.resolve(resolved, f);
       if (abs !== resolved && !abs.startsWith(resolved + path.sep)) {
@@ -451,7 +446,6 @@ router.post('/:name/commit', async (req, res) => {
       }
     }
 
-    // Author env vars (never stored in git config — only in memory for this commit)
     const authorEnv = {};
     if (authorName && authorName.trim()) {
       authorEnv.GIT_AUTHOR_NAME    = authorName.trim();
@@ -464,15 +458,12 @@ router.post('/:name/commit', async (req, res) => {
 
     const git = simpleGit(resolved);
 
-    // Stage selected files
     await git.add(files);
 
-    // Commit with optional author override
     const commitResult = await git
       .env({ ...process.env, ...authorEnv })
       .commit(message.trim());
 
-    // Optionally push to origin
     if (doPush) {
       const cfg    = config.get();
       const token  = cfg.githubPat || process.env.GITHUB_PAT;

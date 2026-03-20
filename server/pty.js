@@ -4,6 +4,7 @@ const pty        = require('node-pty');
 const path       = require('path');
 const os         = require('os');
 const { execFile } = require('child_process');
+const governor   = require('./resource-governor');
 
 // Validate tmux session name to prevent injection
 const SESSION_NAME_RE = /^[a-zA-Z0-9_.-]+$/;
@@ -18,19 +19,21 @@ function sanitizeSessionName(name) {
 /**
  * Capture the recent scrollback buffer of a tmux pane as an ANSI string.
  * Returns null if the session doesn't exist or has no content yet.
+ * Line count adapts to memory pressure via resource governor.
  */
 function captureScrollback(sessionName) {
+  const lines = governor.getScrollbackLines(); // Adaptive: 50-200 based on pressure
   return new Promise((resolve) => {
     execFile(
       'tmux',
       [
         'capture-pane',
         '-t', sessionName,
-        '-p',       // print to stdout
-        '-S', '-200', // up to 200 lines of scrollback history
-        '-e',       // include ANSI escape sequences (colours etc.)
+        '-p',
+        '-S', `-${lines}`,
+        '-e',
       ],
-      { timeout: 3000 },
+      { timeout: 3000, maxBuffer: 512 * 1024 },
       (err, stdout) => {
         if (err || !stdout || stdout.trim().length === 0) return resolve(null);
         resolve(stdout);
@@ -44,20 +47,26 @@ function captureScrollback(sessionName) {
  * Bridges the WebSocket ↔ tmux session via node-pty.
  */
 function handlePtyUpgrade(ws, req) {
-  // URL: /ws/pty/claude-myrepo-ab1c2d  (full tmux session name)
   const urlParts    = req.url.split('/');
   const rawSession  = decodeURIComponent(urlParts[urlParts.length - 1] || '');
 
   let sessionName;
   try {
-    sessionName = sanitizeSessionName(rawSession); // use as-is, no 'claude-' prepend
+    sessionName = sanitizeSessionName(rawSession);
   } catch (e) {
     ws.close(1008, 'Invalid session ID');
     return;
   }
 
+  // ─── Connection limit check via resource governor ─────────────────────────
+  const check = governor.canAcceptPty(sessionName);
+  if (!check.allowed) {
+    console.warn(`[pty] Rejecting connection to "${sessionName}": ${check.reason}`);
+    ws.close(1013, check.reason); // 1013 = Try Again Later
+    return;
+  }
+
   const reposDir = path.join(os.homedir(), 'repos');
-  // Extract repo name from session name: "claude-{repo}-{shortId}" or "claude-{repo}"
   let safeCwd = reposDir;
   const body = sessionName.startsWith('claude-') ? sessionName.slice('claude-'.length) : sessionName;
   const lastDash = body.lastIndexOf('-');
@@ -76,7 +85,7 @@ function handlePtyUpgrade(ws, req) {
     delete ptyEnv.TMUX_PANE;
 
     ptyProcess = pty.spawn('tmux', [
-      'new-session', '-A',   // Attach if exists, create if not
+      'new-session', '-A',
       '-s', sessionName,
       '-x', '220',
       '-y', '50',
@@ -98,28 +107,26 @@ function handlePtyUpgrade(ws, req) {
     return;
   }
 
-  console.log(`[pty] Attached to tmux session "${sessionName}" (pid ${ptyProcess.pid})`);
+  // Register with resource governor for tracking
+  governor.registerPty(sessionName, ws);
 
-  // Enable tmux mouse mode so the client can scroll the tmux scrollback
-  // buffer by sending SGR mouse-wheel escape sequences through the PTY.
+  console.log(`[pty] Attached to tmux session "${sessionName}" (pid ${ptyProcess.pid}) [total PTYs: ${governor.stats()?.totalPtyConnections || '?'}]`);
+
+  // Enable tmux mouse mode
   execFile('tmux', ['set-option', '-t', sessionName, 'mouse', 'on'], { timeout: 3000 }, (err) => {
     if (err) console.warn(`[pty] Could not enable tmux mouse for "${sessionName}":`, err.message);
   });
 
-  // ─── Scrollback buffering ──────────────────────────────────────────────────
-  // Capture recent history from tmux before the PTY stream starts. Buffer
-  // any early PTY output until the capture promise settles to avoid
-  // interleaved ordering.
+  // ─── Scrollback buffering (adaptive limits) ──────────────────────────────
 
   let scrollbackSent   = false;
   const earlyBuffer    = [];
   let earlyBufferBytes = 0;
-  const EARLY_BUFFER_LIMIT = 256 * 1024; // 256 KB — prevent OOM on 1 GB VM
 
-  // Buffer all PTY output until scrollback is sent
   ptyProcess.onData((data) => {
     if (!scrollbackSent) {
-      if (earlyBufferBytes < EARLY_BUFFER_LIMIT) {
+      const limit = governor.getEarlyBufferLimit(); // Adaptive: 64-256 KB
+      if (earlyBufferBytes < limit) {
         earlyBuffer.push(data);
         earlyBufferBytes += data.length;
       }
@@ -134,20 +141,19 @@ function handlePtyUpgrade(ws, req) {
     scrollbackSent = true;
 
     if (scrollback && ws.readyState === ws.OPEN) {
-      // Send scrollback history first so the user sees recent context
       ws.send(Buffer.from(scrollback), { binary: true });
-      // Subtle visual separator between history and live stream
       ws.send(
         Buffer.from('\r\n\x1b[2m\x1b[90m── live ──\x1b[0m\r\n'),
         { binary: true }
       );
     }
 
-    // Flush anything the PTY already sent while we were waiting
-    for (const chunk of earlyBuffer) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(Buffer.from(chunk), { binary: true });
-      }
+    // Flush early buffer as a single concatenated message to reduce frame overhead
+    if (earlyBuffer.length > 0 && ws.readyState === ws.OPEN) {
+      const combined = Buffer.concat(earlyBuffer.map(chunk =>
+        chunk instanceof Buffer ? chunk : Buffer.from(chunk)
+      ));
+      ws.send(combined, { binary: true });
     }
     earlyBuffer.length = 0;
   });
@@ -156,14 +162,14 @@ function handlePtyUpgrade(ws, req) {
 
   ptyProcess.onExit(({ exitCode, signal }) => {
     console.log(`[pty] Session "${sessionName}" detached (code=${exitCode} signal=${signal})`);
+    governor.unregisterPty(sessionName, ws);
     if (ws.readyState === ws.OPEN) ws.close(1000, 'Session ended');
   });
 
   // ─── WebSocket → PTY ──────────────────────────────────────────────────────
 
   ws.on('message', (data) => {
-    // JSON control messages (resize, future extensions)
-    if (typeof data === 'string' || (data instanceof Buffer && data[0] === 123 /* '{' */)) {
+    if (typeof data === 'string' || (data instanceof Buffer && data[0] === 123)) {
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'resize' && msg.cols && msg.rows) {
@@ -173,12 +179,9 @@ function handlePtyUpgrade(ws, req) {
           );
         }
         return;
-      } catch (_) {
-        // Not JSON — fall through and write as raw input
-      }
+      } catch (_) {}
     }
 
-    // Raw keyboard input → PTY
     try {
       if (data instanceof Buffer)      ptyProcess.write(data.toString());
       else if (data instanceof ArrayBuffer) ptyProcess.write(Buffer.from(data).toString());
@@ -190,14 +193,22 @@ function handlePtyUpgrade(ws, req) {
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
 
+  let cleaned = false;
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+    governor.unregisterPty(sessionName, ws);
+    try { ptyProcess.kill(); } catch (_) {}
+  }
+
   ws.on('close', () => {
     console.log(`[pty] WebSocket closed for "${sessionName}" — detaching (session preserved)`);
-    try { ptyProcess.kill(); } catch (_) {}
+    cleanup();
   });
 
   ws.on('error', (err) => {
     console.error('[pty] WebSocket error:', err);
-    try { ptyProcess.kill(); } catch (_) {}
+    cleanup();
   });
 }
 

@@ -10,25 +10,29 @@ const crypto     = require('crypto');
 const router    = express.Router();
 const REPOS_DIR = path.join(os.homedir(), 'repos');
 
-// Regex: allows the full tmux name including dashes (claude-repo-shortid)
 const SESSION_NAME_RE = /^[a-zA-Z0-9_.-]+$/;
 
-// Allowed shells for safe execution
 const ALLOWED_SHELLS = new Set([
   '/bin/bash', '/bin/sh', '/bin/zsh',
   '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish',
 ]);
 
 // ─── In-memory metadata ───────────────────────────────────────────────────────
-// Key = tmux session name (e.g. "claude-myrepo-ab1c2d")
-// Value = { label, repo, mode, created }
-// workdir is read live from tmux, not stored here.
 const sessionMeta = new Map();
+
+// ─── Subprocess result cache ─────────────────────────────────────────────────
+// Prevents subprocess storms when frontend polls GET /api/sessions frequently.
+let _sessionsCache      = null;
+let _sessionsCacheTime  = 0;
+const SESSIONS_CACHE_TTL = 3000; // 3 seconds
+
+let _cwdCache     = new Map(); // sessionName → { cwd, ts }
+const CWD_CACHE_TTL = 5000;   // 5 seconds
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function shortId() {
-  return crypto.randomBytes(3).toString('hex'); // 6 hex chars
+  return crypto.randomBytes(3).toString('hex');
 }
 
 function runTmux(args) {
@@ -41,27 +45,34 @@ function runTmux(args) {
 }
 
 function getPaneCwd(tmuxName) {
+  // Check cache first
+  const cached = _cwdCache.get(tmuxName);
+  if (cached && Date.now() - cached.ts < CWD_CACHE_TTL) {
+    return Promise.resolve(cached.cwd);
+  }
+
   return new Promise((resolve) => {
     execFile(
       'tmux', ['display-message', '-p', '-t', tmuxName, '#{pane_current_path}'],
       { timeout: 3000 },
-      (err, stdout) => resolve(err ? '' : stdout.trim())
+      (err, stdout) => {
+        const cwd = err ? '' : stdout.trim();
+        _cwdCache.set(tmuxName, { cwd, ts: Date.now() });
+        resolve(cwd);
+      }
     );
   });
 }
 
-/** Parse repo and mode from a tmux session name. Returns null if not recognized. */
 function parseSessionName(name) {
   if (!name.startsWith('claude-')) return null;
-  const body = name.slice('claude-'.length); // e.g. "myrepo-ab1c2d" or "_free-ab1c2d"
+  const body = name.slice('claude-'.length);
   const lastDash = body.lastIndexOf('-');
   if (lastDash < 1) {
-    // Old format: "claude-myrepo" (no shortId) — treat as legacy
     return { repo: body === '_free' ? null : body, shortId: null, legacy: true };
   }
   const possibleId = body.slice(lastDash + 1);
   if (possibleId.length !== 6) {
-    // Could be a multi-part repo name with no shortId
     return { repo: body, shortId: null, legacy: true };
   }
   const repo = body.slice(0, lastDash);
@@ -69,12 +80,17 @@ function parseSessionName(name) {
 }
 
 async function listActiveSessions() {
+  // Return cached result if fresh enough
+  if (_sessionsCache && Date.now() - _sessionsCacheTime < SESSIONS_CACHE_TTL) {
+    return _sessionsCache;
+  }
+
   try {
     const output = await runTmux([
       'list-sessions', '-F',
       '#{session_name}:#{session_windows}:#{session_created}',
     ]);
-    return output
+    const result = output
       .split('\n')
       .filter(Boolean)
       .map(line => {
@@ -82,33 +98,80 @@ async function listActiveSessions() {
         return { name, windows: parseInt(windows, 10), created: parseInt(created, 10) * 1000 };
       })
       .filter(s => s.name && s.name.startsWith('claude-'));
+
+    _sessionsCache = result;
+    _sessionsCacheTime = Date.now();
+    return result;
   } catch (err) {
-    if (err.code === 1) return [];
+    if (err.code === 1) {
+      _sessionsCache = [];
+      _sessionsCacheTime = Date.now();
+      return [];
+    }
     throw err;
   }
 }
+
+// ─── Periodic cleanup ────────────────────────────────────────────────────────
+// Remove sessionMeta entries for tmux sessions that no longer exist.
+// Runs every 5 minutes, prevents unbounded metadata growth.
+
+async function cleanupStaleMeta() {
+  try {
+    const active = await listActiveSessions();
+    const activeNames = new Set(active.map(s => s.name));
+    let cleaned = 0;
+    for (const name of sessionMeta.keys()) {
+      if (!activeNames.has(name)) {
+        sessionMeta.delete(name);
+        cleaned++;
+      }
+    }
+    // Also clean stale CWD cache entries
+    for (const [name] of _cwdCache) {
+      if (!activeNames.has(name)) _cwdCache.delete(name);
+    }
+    if (cleaned > 0) {
+      console.log(`[sessions] Cleaned ${cleaned} stale metadata entries`);
+    }
+  } catch (err) {
+    // Non-fatal — just skip this cycle
+  }
+}
+
+const cleanupTimer = setInterval(cleanupStaleMeta, 5 * 60 * 1000);
+cleanupTimer.unref();
+
+// Also run cleanup once at startup (after a short delay to let tmux initialize)
+setTimeout(cleanupStaleMeta, 5000).unref();
 
 // ─── GET /api/sessions ────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const raw = await listActiveSessions();
 
-    // Enrich with live CWD and stored metadata (parallel, capped at 5s each)
-    const sessions = await Promise.all(raw.map(async (s) => {
-      const workdir = await getPaneCwd(s.name);
-      const meta    = sessionMeta.get(s.name) || {};
-      const parsed  = parseSessionName(s.name) || {};
+    // Limit concurrent getPaneCwd calls to prevent subprocess storm
+    const MAX_CONCURRENT_CWD = 5;
+    const sessions = [];
 
-      return {
-        sessionId: s.name,
-        repo:      meta.repo  ?? parsed.repo  ?? null,
-        label:     meta.label ?? s.name,
-        mode:      meta.mode  ?? 'claude',
-        workdir:   workdir    || '',
-        created:   meta.created ?? s.created,
-        windows:   s.windows,
-      };
-    }));
+    for (let i = 0; i < raw.length; i += MAX_CONCURRENT_CWD) {
+      const batch = raw.slice(i, i + MAX_CONCURRENT_CWD);
+      const batchResults = await Promise.all(batch.map(async (s) => {
+        const workdir = await getPaneCwd(s.name);
+        const meta    = sessionMeta.get(s.name) || {};
+        const parsed  = parseSessionName(s.name) || {};
+        return {
+          sessionId: s.name,
+          repo:      meta.repo  ?? parsed.repo  ?? null,
+          label:     meta.label ?? s.name,
+          mode:      meta.mode  ?? 'claude',
+          workdir:   workdir    || '',
+          created:   meta.created ?? s.created,
+          windows:   s.windows,
+        };
+      }));
+      sessions.push(...batchResults);
+    }
 
     res.json({ sessions });
   } catch (err) {
@@ -117,13 +180,11 @@ router.get('/', async (req, res) => {
 });
 
 // ─── GET /api/sessions/:sessionId ─────────────────────────────────────────────
-// Check if a specific session exists. :sessionId is the full tmux name.
 router.get('/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   if (!SESSION_NAME_RE.test(sessionId)) {
     return res.status(400).json({ error: 'Invalid session ID' });
   }
-  // Legacy support: if sessionId looks like a plain repo name, map it
   const tmuxName = sessionId.startsWith('claude-')
     ? sessionId
     : `claude-${sessionId}`;
@@ -142,8 +203,6 @@ router.get('/:sessionId', async (req, res) => {
 });
 
 // ─── POST /api/sessions/_free ─────────────────────────────────────────────────
-// Create a free shell session (no repo).
-// Must be registered before /:repo to avoid _free being treated as a repo name.
 router.post('/_free', async (req, res) => {
   const { label } = req.body || {};
   const id       = shortId();
@@ -166,6 +225,9 @@ router.post('/_free', async (req, res) => {
       created: Date.now(),
     });
 
+    // Invalidate sessions cache so the new session appears immediately
+    _sessionsCache = null;
+
     res.json({ ok: true, sessionId: tmuxName, created: true, mode: 'shell' });
   } catch (err) {
     console.error('[sessions] free create error:', err);
@@ -174,8 +236,6 @@ router.post('/_free', async (req, res) => {
 });
 
 // ─── POST /api/sessions ───────────────────────────────────────────────────────
-// Create a new multi-session.
-// Body: { repo: string, mode?: 'claude'|'shell', workdir?: string, label?: string }
 router.post('/', async (req, res) => {
   const { repo, mode = 'claude', workdir, label } = req.body || {};
   if (!repo || typeof repo !== 'string') {
@@ -198,14 +258,12 @@ router.post('/', async (req, res) => {
     cwd = sub ? path.join(repoPath, sub) : repoPath;
   }
 
-  // Path traversal guard
   try {
     const resolved = fs.realpathSync(cwd);
     if (!resolved.startsWith(repoPath + path.sep) && resolved !== repoPath) {
       return res.status(400).json({ error: 'Invalid working directory' });
     }
   } catch (_) {
-    // Directory doesn't exist yet — fall back to repoPath
     cwd = repoPath;
   }
 
@@ -227,6 +285,8 @@ router.post('/', async (req, res) => {
       created: Date.now(),
     });
 
+    _sessionsCache = null; // Invalidate cache
+
     res.json({ ok: true, sessionId: tmuxName, created: true, mode });
   } catch (err) {
     console.error('[sessions] create error:', err);
@@ -235,7 +295,6 @@ router.post('/', async (req, res) => {
 });
 
 // ─── PATCH /api/sessions/:sessionId ───────────────────────────────────────────
-// Rename a session label.
 router.patch('/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   if (!SESSION_NAME_RE.test(sessionId)) {
@@ -245,11 +304,9 @@ router.patch('/:sessionId', async (req, res) => {
   if (!label || typeof label !== 'string') {
     return res.status(400).json({ error: 'label is required' });
   }
-  // Sanitize label: strip control chars, cap at 80 chars
   const safeLabel = label.replace(/[\x00-\x1f]/g, '').slice(0, 80);
   if (!safeLabel) return res.status(400).json({ error: 'label is empty after sanitization' });
 
-  // Verify session exists
   try {
     await runTmux(['has-session', '-t', sessionId]);
   } catch (_) {
@@ -277,13 +334,14 @@ router.delete('/:sessionId', async (req, res) => {
   if (!SESSION_NAME_RE.test(sessionId)) {
     return res.status(400).json({ error: 'Invalid session ID' });
   }
-  // Legacy support: plain repo name → prepend claude-
   const tmuxName = sessionId.startsWith('claude-')
     ? sessionId
     : `claude-${sessionId}`;
   try {
     await runTmux(['kill-session', '-t', tmuxName]);
     sessionMeta.delete(tmuxName);
+    _cwdCache.delete(tmuxName);
+    _sessionsCache = null; // Invalidate cache
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -291,11 +349,8 @@ router.delete('/:sessionId', async (req, res) => {
 });
 
 // ─── POST /api/sessions/:repo (legacy) ────────────────────────────────────────
-// Keep legacy endpoint so ProjectsPage works before its update.
-// Creates session with old naming convention: claude-{repo}
 router.post('/:repo', async (req, res) => {
   const { repo } = req.params;
-  // If it looks like a sessionId (has claude- prefix), reject
   if (repo.startsWith('claude-')) {
     return res.status(400).json({ error: 'Use POST /api/sessions for new sessions' });
   }
@@ -316,7 +371,6 @@ router.post('/:repo', async (req, res) => {
   const tmuxName  = `claude-${repo}`;
 
   try {
-    // Check if session already exists
     try {
       await runTmux(['has-session', '-t', tmuxName]);
       return res.json({ ok: true, sessionId: tmuxName, sessionName: tmuxName, created: false, mode: 'unknown' });
@@ -325,6 +379,7 @@ router.post('/:repo', async (req, res) => {
     await runTmux(['new-session', '-d', '-s', tmuxName, '-c', repoPath, '-x', '220', '-y', '50', startCmd]);
 
     sessionMeta.set(tmuxName, { repo, label: `${repo}`, mode, created: Date.now() });
+    _sessionsCache = null;
     res.json({ ok: true, sessionId: tmuxName, sessionName: tmuxName, created: true, mode });
   } catch (err) {
     console.error('[sessions] legacy create error:', err);

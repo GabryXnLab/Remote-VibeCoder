@@ -6,7 +6,6 @@ const FileStore  = require('session-file-store')(session);
 const rateLimit  = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 const helmet     = require('helmet');
-const morgan     = require('morgan');
 const http       = require('http');
 const path       = require('path');
 const os         = require('os');
@@ -18,15 +17,12 @@ const authRoutes     = require('./routes/auth');
 const reposRoutes    = require('./routes/repos');
 const sessionsRoutes = require('./routes/sessions');
 const { handlePtyUpgrade } = require('./pty');
+const governor       = require('./resource-governor');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-// Start file watcher so the config cache is invalidated on changes.
 configModule.startWatcher();
 
-// Read the session secret ONCE at startup. Changing it during runtime would
-// invalidate all active sessions, which is intentional — restart the service
-// to rotate the secret.
 const SESSION_SECRET = configModule.get().sessionSecret
   || process.env.SESSION_SECRET
   || 'dev-secret-change-me';
@@ -34,9 +30,22 @@ const SESSION_SECRET = configModule.get().sessionSecret
 const PORT      = parseInt(process.env.PORT || '3000', 10);
 const BIND_HOST = '127.0.0.1';
 
+// ─── Start resource governor ────────────────────────────────────────────────
+governor.start();
+
+governor.onPressure((level, stats) => {
+  if (level === governor.PRESSURE.CRITICAL) {
+    console.warn(`[server] CRITICAL memory pressure — RAM ${stats.memory.usedPercent}%, Swap ${stats.swap.usedPercent}%`);
+  }
+});
+
 // ─── Express setup ────────────────────────────────────────────────────────────
 
 const app = express();
+
+// Disable unnecessary Express features
+app.disable('x-powered-by');  // helmet does this too, belt + suspenders
+app.disable('etag');           // API responses don't benefit from ETag caching
 
 // Security headers
 app.use(helmet({
@@ -53,8 +62,16 @@ app.use(helmet({
   },
 }));
 
-app.use(morgan('combined'));
-app.use(express.json());
+// Use minimal logging in production (less string allocation than 'combined')
+if (process.env.NODE_ENV === 'production') {
+  const morgan = require('morgan');
+  app.use(morgan(':method :url :status :res[content-length] - :response-time ms'));
+} else {
+  const morgan = require('morgan');
+  app.use(morgan('combined'));
+}
+
+app.use(express.json({ limit: '100kb' })); // Cap JSON body size
 app.use(cookieParser());
 
 // Trust Cloudflare / nginx proxy
@@ -62,16 +79,16 @@ app.set('trust proxy', 1);
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
-// Ensure the sessions directory exists before FileStore tries to use it.
 const sessionsDir = path.join(os.homedir(), '.claude-mobile', 'sessions');
 fs.mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
 
 const sessionParser = session({
   store: new FileStore({
     path:    sessionsDir,
-    ttl:     7 * 24 * 60 * 60, // 7 days in SECONDS (FileStore unit)
+    ttl:     7 * 24 * 60 * 60,
     retries: 1,
-    logFn:   () => {},          // Suppress verbose FileStore logs
+    reapInterval: 3600, // Clean expired sessions every hour (default 1h)
+    logFn:   () => {},
   }),
   secret:            SESSION_SECRET,
   resave:            false,
@@ -80,7 +97,7 @@ const sessionParser = session({
     httpOnly: true,
     secure:   process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge:   7 * 24 * 60 * 60 * 1000, // milliseconds (cookie unit)
+    maxAge:   7 * 24 * 60 * 60 * 1000,
   },
 });
 
@@ -89,15 +106,14 @@ app.use(sessionParser);
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 
 const loginLimiter = rateLimit({
-  windowMs:               15 * 60 * 1000, // 15-minute window
-  max:                    10,              // max 10 attempts per window per IP
+  windowMs:               15 * 60 * 1000,
+  max:                    10,
   standardHeaders:        true,
   legacyHeaders:          false,
-  skipSuccessfulRequests: true,            // Successful logins don't count
+  skipSuccessfulRequests: true,
   message:                { error: 'Too many login attempts — try again in 15 minutes' },
 });
 
-// Apply before auth routes so it fires first
 app.use('/api/auth/login', loginLimiter);
 
 // ─── Auth guard ───────────────────────────────────────────────────────────────
@@ -125,8 +141,9 @@ app.use('/api/auth',     authRoutes);
 app.use('/api/repos',    reposRoutes);
 app.use('/api/sessions', sessionsRoutes);
 
-// Public health check — no auth required
+// Public health check — extended with resource governor stats
 app.get('/api/health', (_req, res) => {
+  const govStats = governor.stats();
   const mem = process.memoryUsage();
   res.json({
     ok:      true,
@@ -136,18 +153,29 @@ app.get('/api/health', (_req, res) => {
       heapUsed:  Math.round(mem.heapUsed  / 1024 / 1024),
       heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
     },
+    system: govStats ? {
+      ramUsedPercent:  govStats.memory.usedPercent,
+      ramAvailableMB:  govStats.memory.availableMB,
+      swapUsedPercent: govStats.swap.usedPercent,
+      pressure:        govStats.pressure,
+      activePtys:      govStats.totalPtyConnections,
+      load1:           govStats.load.load1,
+    } : null,
     wsConnections: wss ? wss.clients.size : 0,
     node:          process.version,
   });
 });
 
-// Serve built frontend (dist/ produced by Vite in client-src/)
-// Falls back to client/ in development if dist/ doesn't exist yet
+// Serve built frontend with aggressive caching for hashed assets
 const distDir  = path.join(__dirname, '..', 'dist');
 const clientDir = path.join(__dirname, '..', 'client');
 const staticRoot = fs.existsSync(distDir) ? distDir : clientDir;
 
-app.use(express.static(staticRoot));
+app.use(express.static(staticRoot, {
+  maxAge:    process.env.NODE_ENV === 'production' ? '7d' : 0, // Cache static files 7 days
+  etag:      true,  // Re-enable etag for static files only
+  immutable: process.env.NODE_ENV === 'production',            // Vite hashed filenames are immutable
+}));
 
 // SPA fallback
 app.get('*', (req, res) => {
@@ -160,21 +188,18 @@ app.get('*', (req, res) => {
 
 const server = http.createServer(app);
 
+// Disable perMessageDeflate — it allocates ~300KB per connection for zlib
+// contexts, which is wasteful on a 1GB VM for binary terminal data.
+// Terminal output is already compact and doesn't benefit much from compression.
 const wss = new WebSocketServer({
   noServer: true,
-  perMessageDeflate: {
-    threshold:                512,  // Only compress messages > 512 bytes
-    zlibDeflateOptions:       { level: 6 },
-    clientNoContextTakeover:  true,
-    serverNoContextTakeover:  true,
-  },
+  perMessageDeflate: false,
+  maxPayload: 1 * 1024 * 1024, // 1 MB max message size (safety)
 });
 
 // ─── WebSocket heartbeat ──────────────────────────────────────────────────────
-// Detects dead TCP connections that are not cleanly closed (common on mobile
-// when switching networks).
 
-const HEARTBEAT_INTERVAL = 30_000; // 30 seconds
+const HEARTBEAT_INTERVAL = 30_000;
 
 const heartbeatTimer = setInterval(() => {
   wss.clients.forEach((ws) => {
@@ -188,16 +213,16 @@ const heartbeatTimer = setInterval(() => {
   });
 }, HEARTBEAT_INTERVAL);
 
+heartbeatTimer.unref(); // Don't keep process alive for heartbeat
+
 wss.on('close', () => clearInterval(heartbeatTimer));
 
 // ─── WebSocket connection handler ────────────────────────────────────────────
 
 wss.on('connection', (ws, req) => {
-  // Heartbeat tracking
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  // PTY bridge
   handlePtyUpgrade(ws, req);
 });
 
@@ -228,6 +253,7 @@ server.on('upgrade', (req, socket, head) => {
 server.listen(PORT, BIND_HOST, () => {
   console.log(`[server] Remote VibeCoder listening on http://${BIND_HOST}:${PORT}`);
   console.log(`[server] Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`[server] V8 heap limit: ${Math.round(require('v8').getHeapStatistics().heap_size_limit / 1048576)}MB`);
 });
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
@@ -236,8 +262,8 @@ function gracefulShutdown(signal) {
   console.log(`[server] ${signal} received — shutting down`);
 
   clearInterval(heartbeatTimer);
+  governor.stop();
 
-  // Notify connected clients so they start reconnecting immediately
   wss.clients.forEach((ws) => {
     try { ws.close(1001, 'Server restarting — reconnect shortly'); } catch (_) {}
   });
@@ -247,7 +273,6 @@ function gracefulShutdown(signal) {
     process.exit(0);
   });
 
-  // Force exit after 10 s if something hangs
   setTimeout(() => {
     console.error('[server] Forced exit after shutdown timeout');
     process.exit(1);

@@ -48,12 +48,13 @@ Claude Code CLI (or shell)
 ```
 
 **Server files:**
-- `server/index.js` — Express app + WebSocket server; helmet security headers, FileStore sessions, rate limiting, auth guard, heartbeat ping/pong, graceful shutdown
-- `server/pty.js` — WebSocket↔PTY bridge; scrollback buffering via `tmux capture-pane` (200 lines), early buffer cap (256 KB), resize clamping; JSON messages are control signals (resize), binary is raw terminal I/O
+- `server/index.js` — Express app + WebSocket server; helmet security headers, FileStore sessions, rate limiting, auth guard, heartbeat ping/pong, graceful shutdown; WS compression disabled (saves ~300KB/conn)
+- `server/pty.js` — WebSocket↔PTY bridge; adaptive scrollback buffering via `tmux capture-pane` (50-200 lines based on pressure), adaptive early buffer cap (64-256 KB), resize clamping; connection limits via resource governor
 - `server/config.js` — Reads `~/.claude-mobile/config.json` with hot-reload via `fs.watch()`
+- `server/resource-governor.js` — Adaptive resource management: reads `/proc/meminfo` + `/proc/loadavg`, classifies pressure (low/moderate/high/critical), triggers GC under pressure, tracks PTY connections, provides adaptive limits
 - `server/routes/auth.js` — PBKDF2-SHA512 (100k iterations) session auth; `crypto.timingSafeEqual()` to prevent timing attacks; 500ms delay on failure
-- `server/routes/repos.js` — GitHub API (Octokit), git clone/pull, directory tree, git status, commit+push, delete; PAT via GIT_ASKPASS temp file (never in `.git/config`); path traversal protection via `realpathSync()` + separator check
-- `server/routes/sessions.js` — tmux session lifecycle (CRUD); shell command whitelist for `?shell=true`
+- `server/routes/repos.js` — GitHub API (Octokit), git clone/pull, directory tree, git status, commit+push, delete; PAT via GIT_ASKPASS temp file (never in `.git/config`); path traversal protection via `realpathSync()` + separator check; async I/O for dir listings; GitHub repo cache (2min TTL)
+- `server/routes/sessions.js` — tmux session lifecycle (CRUD); shell command whitelist for `?shell=true`; subprocess caching (3s TTL), batched CWD lookups (max 5 concurrent), periodic stale metadata cleanup
 
 **Frontend:**
 - `client-src/` — React 18 + TypeScript + Vite. Compiles to `dist/`. Server serves `dist/` in production.
@@ -91,6 +92,62 @@ Claude Code CLI (or shell)
 - **Mobile UX:** 100dvh layout, virtual keyboard awareness, min 220 terminal columns, bottom-sheet modals, exponential backoff reconnect (1.5s → 30s), WebSocket heartbeat every 30s
 - **PAT security:** GitHub token passed only via GIT_ASKPASS temp file (0o600), never stored in `.git/config`
 - **Input validation on commit:** message max 2000 chars, file paths validated against repo root with `realpathSync()`, author fields stripped of control chars
+
+## Resource Optimization (e2-micro)
+
+This system is aggressively optimized for a 1GB RAM + 2GB swap GCP e2-micro VM that runs 24/7 with potentially indefinitely-open idle terminals.
+
+### V8 / Node.js Tuning
+- `--max-old-space-size=256` — V8 heap capped at 256MB (default ~1.7GB would OOM the VM)
+- `--optimize-for-size` — prefer smaller generated code over faster JIT
+- `--expose-gc` — allows resource governor to trigger manual GC under memory pressure
+- `--max-semi-space-size=2` — shrink young generation from 16MB to 2MB
+- `UV_THREADPOOL_SIZE=2` — reduce libuv thread pool (single-user, 2 is enough)
+
+### systemd cgroup Limits
+- `MemoryHigh=400M` — soft limit, kernel throttles above this
+- `MemoryMax=512M` — hard limit, OOM kill (controlled restart via `Restart=always`)
+- `TasksMax=200` — prevent fork bombs from runaway PTY spawning
+- `OOMScoreAdjust=-500` — prefer killing other processes first
+- `LimitNOFILE=4096` — cap open file descriptors
+
+### Resource Governor (`server/resource-governor.js`)
+Lightweight module (<1MB RSS) that:
+- Reads `/proc/meminfo` and `/proc/loadavg` directly (no child processes)
+- Classifies system into 4 pressure levels: low (<60%), moderate (60-80%), high (80-90%), critical (>90%)
+- Adaptive polling: 60s when idle → 10s under critical pressure
+- Triggers `global.gc()` when pressure is high/critical
+- Tracks all PTY connections: max 3 per session, max 15 total
+- Rejects new PTY connections under critical pressure (WS close code 1013)
+- Provides adaptive limits: scrollback lines (50-200), early buffer size (64-256 KB)
+
+### Caching & Subprocess Management
+- **Sessions list**: cached 3 seconds — prevents subprocess storms from frontend polling
+- **CWD lookups**: cached 5 seconds per session
+- **GitHub repos**: cached 2 minutes — avoids re-fetching all repos on every page load
+- **getPaneCwd**: batched max 5 concurrent tmux subprocesses (prevents PID/FD exhaustion)
+- **Static files**: 7-day `Cache-Control` + `immutable` for Vite hashed assets
+
+### Kernel Tuning (setup.sh)
+- `vm.swappiness=30` — prefer RAM over swap
+- `vm.vfs_cache_pressure=50` — keep filesystem caches longer
+- `vm.dirty_ratio=10` / `vm.dirty_background_ratio=5` — flush dirty pages sooner
+- `vm.min_free_kbytes=32768` — reserve 32MB for kernel
+- TCP keepalive tuned for faster dead connection detection (300s, 30s interval, 5 probes)
+
+### Cleanup
+- Stale `sessionMeta` entries cleaned every 5 minutes (removes metadata for dead tmux sessions)
+- FileStore session reaping every hour (expired session files)
+- Cron: stale session files (>8 days) and orphaned temp credential dirs (>1h) cleaned every 6 hours
+- Resource usage logged to `~/.claude-mobile/resource.log` (rolling 100 lines)
+
+### Rules for Future Resource Work
+1. **NEVER disable `--max-old-space-size`** — without it, V8 will happily allocate 1.7GB and OOM the VM
+2. **NEVER increase `MemoryMax` above 512M** — leaves only 500MB for tmux, Claude Code, git etc.
+3. **NEVER use synchronous I/O in hot paths** (session list, directory tree) — use `fs/promises`
+4. **NEVER spawn unbounded subprocesses** — always use caching or concurrency limits
+5. **WebSocket compression is OFF by design** — zlib contexts cost ~300KB per connection
+6. The resource governor overhead is intentionally minimal (~1MB RSS, reads /proc files, no child processes)
 
 ## xterm.js + tmux: Mobile Touch Interaction (Critical)
 

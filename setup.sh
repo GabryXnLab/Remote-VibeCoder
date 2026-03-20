@@ -59,6 +59,45 @@ else
   success "2GB swap enabled"
 fi
 
+# ─── Step 1b: Kernel tuning for 1GB VM ──────────────────────────────────────
+info "Applying kernel memory optimizations…"
+SYSCTL_CONF="/etc/sysctl.d/99-claude-mobile.conf"
+sudo tee "$SYSCTL_CONF" > /dev/null << 'SYSEOF'
+# Remote VibeCoder — kernel tuning for e2-micro (1GB RAM + 2GB swap)
+
+# Swap: prefer keeping data in RAM but use swap freely when needed.
+# 60 is default; 30 means "try harder to keep things in RAM"
+vm.swappiness=30
+
+# Reduce inode/dentry cache pressure (default 100).
+# Lower = keep filesystem caches longer (good for repeated static file serving)
+vm.vfs_cache_pressure=50
+
+# Write-back tuning: flush dirty pages sooner to avoid I/O spikes
+vm.dirty_ratio=10
+vm.dirty_background_ratio=5
+
+# Reduce minimum free memory reserve (default often too high for 1GB)
+# 32MB is enough for the kernel to function under pressure
+vm.min_free_kbytes=32768
+
+# Network: smaller buffer defaults for single-user server
+net.core.rmem_default=131072
+net.core.wmem_default=131072
+net.core.rmem_max=1048576
+net.core.wmem_max=1048576
+
+# TCP keepalive: detect dead connections faster (helps WebSocket cleanup)
+net.ipv4.tcp_keepalive_time=300
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=5
+
+# Reuse TIME_WAIT sockets (single-user server, safe)
+net.ipv4.tcp_tw_reuse=1
+SYSEOF
+sudo sysctl -p "$SYSCTL_CONF" >/dev/null 2>&1
+success "Kernel parameters optimized for 1GB VM"
+
 # ─── Step 2: System packages ─────────────────────────────────────────────────
 header "Step 2 / 10 — System Packages"
 info "Updating package lists…"
@@ -427,16 +466,34 @@ curl -sf http://localhost:3000/api/health >/dev/null 2>&1 || \
 HEALTHEOF
 chmod +x "$HOME_DIR/bin/healthcheck-claude.sh"
 
+# Write a resource cleanup script (stale session files + temp credentials)
+cat > "$HOME_DIR/bin/cleanup-claude-resources.sh" << 'CLEANEOF'
+#!/bin/bash
+# Remove expired session files (older than 8 days, TTL is 7 days)
+find "$HOME/.claude-mobile/sessions" -name '*.json' -mtime +8 -delete 2>/dev/null
+
+# Remove orphaned git credential temp dirs (older than 1 hour)
+find /tmp -maxdepth 1 -name 'vc-cred-*' -mmin +60 -type d -exec rm -rf {} + 2>/dev/null
+
+# Log memory stats for debugging (append to rotating log, max 100 lines)
+LOGFILE="$HOME/.claude-mobile/resource.log"
+echo "$(date -Is) $(free -m | awk '/^Mem:/{printf "RAM: %dMB/%dMB", $3, $2}') $(free -m | awk '/^Swap:/{printf "Swap: %dMB/%dMB", $3, $2}')" >> "$LOGFILE"
+tail -100 "$LOGFILE" > "$LOGFILE.tmp" && mv "$LOGFILE.tmp" "$LOGFILE"
+CLEANEOF
+chmod +x "$HOME_DIR/bin/cleanup-claude-resources.sh"
+
 # Install cron jobs — remove stale entries first to stay idempotent
 (
-  crontab -l 2>/dev/null | grep -v 'backup-claude-config\|healthcheck-claude'
+  crontab -l 2>/dev/null | grep -v 'backup-claude-config\|healthcheck-claude\|cleanup-claude-resources'
   echo "# Daily config backup at 2am"
   echo "0 2 * * * $HOME_DIR/bin/backup-claude-config.sh"
   echo "# Health check every 5 minutes"
   echo "*/5 * * * * $HOME_DIR/bin/healthcheck-claude.sh"
+  echo "# Resource cleanup every 6 hours"
+  echo "0 */6 * * * $HOME_DIR/bin/cleanup-claude-resources.sh"
 ) | crontab -
 
-success "Cron jobs installed (daily backup + 5-min healthcheck)"
+success "Cron jobs installed (daily backup + 5-min healthcheck + 6h resource cleanup)"
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo ""
