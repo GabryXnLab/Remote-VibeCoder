@@ -381,11 +381,17 @@ export function TerminalPage() {
     // Printable text goes through compositionupdate (IME keyboards) or the
     // input event's InputEvent.data (non-composing keyboards).
     if (xtermTa && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
-      let isComposing         = false
-      let prevCompositionText = ''
+      let isComposing          = false
+      let prevCompositionText  = ''
+      // After compositionend, the browser fires one more input event that may
+      // contain the committed text (already sent) plus an optional terminating
+      // char (e.g. space). We use lastCompositionText to strip the already-sent
+      // part and forward only the new remainder.
+      let compositionJustEnded  = false
+      let lastCompositionText   = ''
       // Tracks whether keydown already sent Backspace/Enter so the subsequent
       // input event (on hardware keyboards) doesn't double-send it.
-      let specialFromKeydown  = false
+      let specialFromKeydown    = false
 
       const sendDirect = (text: string) => {
         const ws2 = termMapRef.current.get(sessionId)?.ws
@@ -470,12 +476,15 @@ export function TerminalPage() {
         prevCompositionText = newText
       }, true)
 
-      // compositionend: clear state; wipe textarea so the browser can't re-fill
+      // compositionend: save what we sent so the post-composition input event
+      // can strip it; wipe textarea so the browser can't re-fill with old text.
       xtermTa.addEventListener('compositionend', (e: CompositionEvent) => {
         e.stopImmediatePropagation()
-        isComposing         = false
-        prevCompositionText = ''
-        xtermTa.value       = ''
+        lastCompositionText  = prevCompositionText  // remember what we already sent
+        compositionJustEnded = true
+        isComposing          = false
+        prevCompositionText  = ''
+        xtermTa.value        = ''
       }, true)
 
       // input: ALWAYS stopImmediatePropagation — xterm.onData must never fire on
@@ -486,6 +495,37 @@ export function TerminalPage() {
         if (isComposing) return  // compositionupdate already sent the delta
 
         const ie = e as InputEvent
+
+        // ── Post-composition input ──────────────────────────────────────────
+        // The browser fires this right after compositionend. ie.data may be:
+        //   • the exact committed text (already sent) → nothing to do
+        //   • committed text + terminating char (e.g. 'ciao ') → send remainder
+        //   • just the terminating char (e.g. ' ', '@') → send it
+        //   • autocorrected word (completely different) → undo + resend
+        if (compositionJustEnded) {
+          compositionJustEnded = false
+          // ie.data is reliable (InputEvent property, not read from textarea).
+          // Fallback to xtermTa.value for older Android WebViews that omit it.
+          const data = ie.data ?? xtermTa.value
+          if (data && data !== lastCompositionText) {
+            if (data.startsWith(lastCompositionText)) {
+              // Common case: committed text + terminating char → send the extra
+              sendDirect(data.slice(lastCompositionText.length))
+            } else if (lastCompositionText.startsWith(data)) {
+              // Keyboard sent a shorter/different string (e.g. just ' ') —
+              // this IS new content, send it
+              sendDirect(data)
+            } else {
+              // Autocorrect replaced the whole word. Undo what we sent then
+              // send the corrected text (uses unicode-aware spread for length).
+              sendDirect('\x7f'.repeat([...lastCompositionText].length))
+              sendDirect(data)
+            }
+          }
+          lastCompositionText = ''
+          return
+        }
+
         if (ie.inputType === 'deleteContentBackward') {
           if (!specialFromKeydown) sendDirect('\x7f')
           specialFromKeydown = false
@@ -497,7 +537,9 @@ export function TerminalPage() {
           return
         }
         specialFromKeydown = false
-        if (ie.data) sendDirect(ie.data)  // insertText and equivalents
+        // insertText and equivalents — use ie.data (reliable) or textarea value
+        const text = ie.data ?? xtermTa.value
+        if (text) sendDirect(text)
       }, true)
     }
 
