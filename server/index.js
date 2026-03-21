@@ -177,6 +177,11 @@ app.use(express.static(staticRoot, {
   immutable: process.env.NODE_ENV === 'production',            // Vite hashed filenames are immutable
 }));
 
+// Debug page — served directly, bypasses SPA
+app.get('/debug-input', (_req, res) => {
+  res.sendFile(path.join(staticRoot, 'debug-input.html'));
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
