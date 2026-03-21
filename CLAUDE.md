@@ -199,6 +199,8 @@ A secondary problem: **space and non-letter characters (symbols, numbers, emoji)
 2. `xtermTa.value` was cleared **before** being read as fallback → fallback is always `''` → `sendDirect` never called → character lost.
 3. The `compositionJustEnded` flag, if active, can send the wrong character if the post-composition `input` logic has incorrect branching (e.g. `lastCompositionText.startsWith(data)` is `false` for `' '` after `'ciao'` → falls into wrong else branch → sends backspaces instead of the character).
 
+A third problem (Samsung Keyboard specific): **Samsung Keyboard fires `input(insertText)` for terminator characters (space, `/`, `-`, numbers, symbols) BEFORE `compositionend`**. The original guard `if (isComposing) { return }` discarded these events entirely because the composition flag was still `true` when they arrived. Fix: only return early for non-`insertText` input events during composition — `insertText` events must fall through to the normal send path.
+
 ### The Solution (Complete Mobile Input Bypass)
 
 **Architecture:** On touch-capable devices, intercept **all** keyboard/input events on `.xterm-helper-textarea` using **capture-phase listeners** (`addEventListener(..., true)`). Always call `e.stopImmediatePropagation()` so xterm's bubble-phase handlers never fire and `term.onData` is never triggered. Send everything directly via WebSocket — the same principle as the SGR scroll bypass.
@@ -243,6 +245,7 @@ The `else` branch intentionally does NOT attempt to undo the composition (no bac
 4. **NEVER use `lastCompositionText.startsWith(data)`** as a condition — `'ciao'.startsWith(' ')` is `false`, so space after a word falls into the wrong branch.
 5. The `compositionJustEnded` flag resets after the first `input` event post-`compositionend`. If no such `input` fires (some keyboards omit it), the flag stays `true` until the next input — the simplified else logic still handles this correctly.
 6. Emoji work via `input(insertText, ie.data='😀')` without composition — the normal `sendDirect(ie.data ?? valueBeforeClear)` path handles them.
+7. **Samsung Keyboard fires `insertText` BEFORE `compositionend`** for space/numbers/symbols. The `isComposing` guard must check `inputType !== 'insertText'` before discarding — otherwise terminators are silently dropped.
 
 ### Related: Frontend Build Pipeline
 

@@ -491,7 +491,12 @@ export function TerminalPage() {
       // mobile. Handle non-composing text (insertText, deleteContentBackward, …).
       xtermTa.addEventListener('input', (e: Event) => {
         e.stopImmediatePropagation()
-        if (isComposing) { xtermTa.value = ''; return }  // compositionupdate owns this
+        // compositionupdate owns insertCompositionText events.
+        // BUT Samsung Keyboard fires insertText for space/numbers/symbols BEFORE
+        // compositionend while isComposing is still true — don't drop those.
+        if (isComposing && (e as InputEvent).inputType !== 'insertText') {
+          xtermTa.value = ''; return
+        }
 
         const ie = e as InputEvent
         // CRITICAL: read textarea value BEFORE clearing it.
