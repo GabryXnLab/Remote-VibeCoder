@@ -66,6 +66,23 @@ body[data-display-mode="zoom-out"] .xterm-viewport {
   overflow-x: auto;
 }
 
+/* ── Android virtual keyboard fix ──────────────────────────────────────────
+   xterm.js positions its helper textarea at left:-9999em with width:0/height:0.
+   On Android Chrome, calling focus() on a zero-size or off-screen element does
+   NOT open the virtual keyboard. We move it to position 0,0 with a 1px size so
+   Android recognises it as a tappable/focusable element in the viewport.
+   opacity:0 + caret-color:transparent keep it completely invisible.
+   overflow:hidden (already set by xterm) prevents any text from showing. */
+.xterm-helper-textarea {
+  left:         0 !important;
+  top:          0 !important;
+  width:        1px !important;
+  height:       1px !important;
+  opacity:      0 !important;
+  caret-color:  transparent !important;
+  z-index:      -1 !important;
+}
+
 /* ── Shared keyframes ── */
 @keyframes spin {
   to { transform: rotate(360deg); }

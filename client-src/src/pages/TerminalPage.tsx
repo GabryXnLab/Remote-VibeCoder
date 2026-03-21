@@ -316,8 +316,11 @@ export function TerminalPage() {
 
       overlay.addEventListener('touchend', () => {
         if (isTap) {
+          // Focus xterm's helper textarea to open the virtual keyboard.
+          // NOTE: we override its CSS in globals.css to give it 1px size and
+          // left:0 — Android Chrome refuses to open the keyboard for elements
+          // that are zero-size or positioned off-screen (left:-9999em default).
           term.focus()
-          // Focus esplicito sulla textarea di xterm per aprire la tastiera su iOS
           const ta = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
           if (ta) ta.focus()
         }
@@ -376,6 +379,9 @@ export function TerminalPage() {
         inst.term.dispose()
       })
       termMapRef.current.clear()
+      // Clean up space-hold timer/interval if active
+      if (spaceTimeoutRef.current)  clearTimeout(spaceTimeoutRef.current)
+      if (spaceIntervalRef.current) clearInterval(spaceIntervalRef.current)
     }
   }, [])
 
@@ -500,20 +506,14 @@ export function TerminalPage() {
     connecting: 'Connecting…', connected: 'Connected', disconnected: 'Disconnected',
   }
 
-  // ── Space-hold mic (simulates holding Space for Claude Code voice mode) ──
+  // ── Space-hold mic (toggle: tap once to activate, tap again to stop) ──────
+  // Simulates holding the Space key for Claude Code's voice-input mode.
+  // Claude Code activates voice recording when Space is held; releasing Space
+  // submits. We replicate this by sending repeated Space characters while
+  // the button is toggled on, then stopping on the next tap.
   const [isHoldingSpace, setIsHoldingSpace] = useState(false)
   const spaceTimeoutRef  = useRef<ReturnType<typeof setTimeout>  | null>(null)
   const spaceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const startSpaceHold = useCallback(() => {
-    if (spaceTimeoutRef.current || spaceIntervalRef.current) return
-    setIsHoldingSpace(true)
-    sendToWs(' ')
-    spaceTimeoutRef.current = setTimeout(() => {
-      spaceTimeoutRef.current = null
-      spaceIntervalRef.current = setInterval(() => sendToWs(' '), 50)
-    }, 400)
-  }, [sendToWs])
 
   const stopSpaceHold = useCallback(() => {
     if (spaceTimeoutRef.current) {
@@ -526,6 +526,24 @@ export function TerminalPage() {
     }
     setIsHoldingSpace(false)
   }, [])
+
+  // Toggle: first press → start sending spaces (voice ON), second press → stop (voice OFF)
+  const toggleSpaceHold = useCallback(() => {
+    if (spaceTimeoutRef.current || spaceIntervalRef.current) {
+      // Already active → stop (simulate releasing Space)
+      stopSpaceHold()
+      return
+    }
+    // Not active → start (simulate pressing and holding Space)
+    setIsHoldingSpace(true)
+    sendToWs(' ')
+    // After the initial repeat-delay (400 ms, matching typical key-repeat onset),
+    // send spaces at ~20 Hz to keep Claude Code's hold-space mode active.
+    spaceTimeoutRef.current = setTimeout(() => {
+      spaceTimeoutRef.current = null
+      spaceIntervalRef.current = setInterval(() => sendToWs(' '), 50)
+    }, 400)
+  }, [sendToWs, stopSpaceHold])
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -639,13 +657,10 @@ export function TerminalPage() {
             }}>↺</Button>
           <button
             className={[styles.micBtn, isHoldingSpace ? styles.micBtnRecording : ''].filter(Boolean).join(' ')}
-            onTouchStart={e => { e.preventDefault(); startSpaceHold() }}
-            onTouchEnd={e => { e.preventDefault(); stopSpaceHold() }}
+            onTouchEnd={e => { e.preventDefault(); toggleSpaceHold() }}
             onTouchCancel={stopSpaceHold}
-            onMouseDown={startSpaceHold}
-            onMouseUp={stopSpaceHold}
-            onMouseLeave={stopSpaceHold}
-            title="Hold for voice (Space)"
+            onClick={toggleSpaceHold}
+            title="Tap to toggle voice (Space hold)"
           >
             {isHoldingSpace ? (
               <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
