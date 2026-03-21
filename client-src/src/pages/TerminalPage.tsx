@@ -417,8 +417,8 @@ export function TerminalPage() {
         compositionJustEnded = true
       }, true)
 
-      xtermTa.addEventListener('input', (e: InputEvent) => {
-        if (e.isComposing) {
+      xtermTa.addEventListener('input', (e: Event) => {
+        if ((e as InputEvent).isComposing) {
           // Block xterm from processing composing input (xterm's _compositionHelper
           // .isComposing would normally be true here, but since we stopped
           // compositionstart from reaching it, it's false — so xterm WOULD
