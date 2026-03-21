@@ -368,91 +368,136 @@ export function TerminalPage() {
       xtermTa.setAttribute('data-gramm_editor', 'false')
     }
 
-    // ── Android IME composition fix ──────────────────────────────────────────
-    // Problem: xterm.js has a compositionHelper that renders a visual overlay
-    // on the terminal canvas (causing "ciao|ciao"), AND its input handler
-    // double-sends composed text.
+    // ── Mobile input bypass ──────────────────────────────────────────────────
+    // xterm.js double-sends characters on Android: its own input handler fires
+    // term.onData AND our composition handler calls sendDirect — result: "cciiaaoo".
     //
-    // Previous attempt used e.isComposing to gate logic, but e.isComposing is
-    // unreliable on some Android keyboards (may stay false during composition).
-    // When it was false: prevComposingValue stayed '', and startsWith('') is
-    // always true → every character was sent again in the post-composition
-    // branch → "cciiaaoo".
+    // Fix (analogous to the SGR scroll bypass): on touch devices, intercept ALL
+    // keyboard/input events in capture phase (before xterm's bubble handlers),
+    // always call stopImmediatePropagation so xterm.onData NEVER fires for
+    // mobile input, and send everything directly via WebSocket ourselves.
     //
-    // Fix: use our own isInComposition flag (set by compositionstart/end, which
-    // ARE reliable) instead of e.isComposing. Send data in compositionupdate
-    // (has canonical e.data). Block all input events during composition with
-    // stopImmediatePropagation so xterm never touches them.
+    // Special keys (arrows, Ctrl+key, F-keys…) are handled in keydown.
+    // Printable text goes through compositionupdate (IME keyboards) or the
+    // input event's InputEvent.data (non-composing keyboards).
     if (xtermTa && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
-      let prevComposingValue = ''    // text sent so far in current composition
-      let isInComposition    = false // reliable flag from compositionstart/end
-      let compositionJustEnded = false
+      let isComposing         = false
+      let prevCompositionText = ''
+      // Tracks whether keydown already sent Backspace/Enter so the subsequent
+      // input event (on hardware keyboards) doesn't double-send it.
+      let specialFromKeydown  = false
 
       const sendDirect = (text: string) => {
         const ws2 = termMapRef.current.get(sessionId)?.ws
         if (ws2?.readyState === WebSocket.OPEN) ws2.send(text)
       }
 
-      xtermTa.addEventListener('compositionstart', (e) => {
-        e.stopImmediatePropagation()   // block xterm's compositionHelper overlay
-        isInComposition    = true
-        prevComposingValue = ''
-        compositionJustEnded = false
-      }, true)
+      // keydown: handle Ctrl+key combos, arrow/function keys, hardware specials.
+      // Always stopImmediatePropagation so xterm's keydown handler never fires.
+      xtermTa.addEventListener('keydown', (e: KeyboardEvent) => {
+        e.stopImmediatePropagation()
+        if (isComposing) return  // composition events own this keystroke
 
-      // Send delta here — compositionupdate has reliable e.data on all keyboards.
-      xtermTa.addEventListener('compositionupdate', (e: CompositionEvent) => {
-        e.stopImmediatePropagation()   // block xterm's compositionHelper overlay
-        const newText = e.data ?? ''
-        if (newText.length > prevComposingValue.length) {
-          sendDirect(newText.slice(prevComposingValue.length))
-        } else if (newText.length < prevComposingValue.length) {
-          const n = prevComposingValue.length - newText.length
-          for (let i = 0; i < n; i++) sendDirect('\x7f')
-        }
-        prevComposingValue = newText
-      }, true)
-
-      xtermTa.addEventListener('compositionend', (e) => {
-        e.stopImmediatePropagation()   // block xterm's compositionHelper cleanup
-        isInComposition    = false
-        compositionJustEnded = true
-        // Clear now so the browser can't append committed text on top of the
-        // composition placeholder, which would make xtermTa.value = "cc" and
-        // cause the post-composition input handler to re-send "c".
-        xtermTa.value = ''
-      }, true)
-
-      xtermTa.addEventListener('input', (e: Event) => {
-        if (isInComposition) {
-          // Block xterm from processing any input while we're composing.
-          // Data is already sent character-by-character in compositionupdate.
-          e.stopImmediatePropagation()
-          return
-        }
-
-        if (compositionJustEnded) {
-          // First input after compositionend: may contain the terminating
-          // character (e.g. space). Strip the already-sent composition text
-          // and send only the remainder.
-          e.stopImmediatePropagation()
-          compositionJustEnded = false
-          const current = xtermTa.value
-          if (current.startsWith(prevComposingValue)) {
-            const remainder = current.slice(prevComposingValue.length)
-            if (remainder) sendDirect(remainder)
-          } else {
-            // Autocorrect changed the whole word — send whatever xterm would
-            // have sent; we take responsibility since we stopped propagation.
-            if (current) sendDirect(current)
+        if (e.ctrlKey && !e.altKey && !e.metaKey) {
+          const ctrlMap: Record<string, string> = {
+            a:'\x01', b:'\x02', c:'\x03', d:'\x04', e:'\x05', f:'\x06',
+            g:'\x07', h:'\x08', k:'\x0b', l:'\x0c', n:'\x0e', p:'\x10',
+            q:'\x11', r:'\x12', s:'\x13', u:'\x15', v:'\x16', w:'\x17',
+            x:'\x18', y:'\x19', z:'\x1a', '[':'\x1b', '\\':'\x1c', ']':'\x1d',
           }
-          xtermTa.value      = ''
-          prevComposingValue = ''
-          return
+          const seq = ctrlMap[e.key.toLowerCase()]
+          if (seq) { sendDirect(seq); e.preventDefault(); return }
         }
 
-        // Normal non-composing input (e.g. typing after a space) — let xterm
-        // handle it as usual; do not call stopImmediatePropagation.
+        switch (e.key) {
+          case 'ArrowUp':    sendDirect('\x1b[A');  e.preventDefault(); break
+          case 'ArrowDown':  sendDirect('\x1b[B');  e.preventDefault(); break
+          case 'ArrowRight': sendDirect('\x1b[C');  e.preventDefault(); break
+          case 'ArrowLeft':  sendDirect('\x1b[D');  e.preventDefault(); break
+          case 'Home':       sendDirect('\x1b[H');  e.preventDefault(); break
+          case 'End':        sendDirect('\x1b[F');  e.preventDefault(); break
+          case 'Delete':     sendDirect('\x1b[3~'); e.preventDefault(); break
+          case 'PageUp':     sendDirect('\x1b[5~'); e.preventDefault(); break
+          case 'PageDown':   sendDirect('\x1b[6~'); e.preventDefault(); break
+          case 'Escape':     sendDirect('\x1b');    e.preventDefault(); break
+          case 'Tab':        sendDirect('\t');       e.preventDefault(); break
+          case 'F1':  sendDirect('\x1bOP');   e.preventDefault(); break
+          case 'F2':  sendDirect('\x1bOQ');   e.preventDefault(); break
+          case 'F3':  sendDirect('\x1bOR');   e.preventDefault(); break
+          case 'F4':  sendDirect('\x1bOS');   e.preventDefault(); break
+          case 'F5':  sendDirect('\x1b[15~'); e.preventDefault(); break
+          case 'F6':  sendDirect('\x1b[17~'); e.preventDefault(); break
+          case 'F7':  sendDirect('\x1b[18~'); e.preventDefault(); break
+          case 'F8':  sendDirect('\x1b[19~'); e.preventDefault(); break
+          case 'F9':  sendDirect('\x1b[20~'); e.preventDefault(); break
+          case 'F10': sendDirect('\x1b[21~'); e.preventDefault(); break
+          case 'F11': sendDirect('\x1b[23~'); e.preventDefault(); break
+          case 'F12': sendDirect('\x1b[24~'); e.preventDefault(); break
+          // Backspace / Enter: send here for hardware keyboards (key is reliable).
+          // Set flag so the subsequent input event doesn't double-send.
+          // On soft keyboards e.key is usually 'Unidentified', so the flag stays
+          // false and input event handles it instead.
+          case 'Backspace':
+            specialFromKeydown = true; sendDirect('\x7f'); e.preventDefault(); break
+          case 'Enter':
+            specialFromKeydown = true; sendDirect('\r');   e.preventDefault(); break
+          // Printable chars (e.key.length === 1, no modifier): skip —
+          // let the input event handle them to avoid duplication.
+        }
+      }, true)
+
+      // keypress: block entirely (xterm listens here too on some builds)
+      xtermTa.addEventListener('keypress', (e: Event) => {
+        e.stopImmediatePropagation()
+      }, true)
+
+      // compositionstart: IME session begins
+      xtermTa.addEventListener('compositionstart', (e: CompositionEvent) => {
+        e.stopImmediatePropagation()
+        isComposing         = true
+        prevCompositionText = ''
+      }, true)
+
+      // compositionupdate: send only the delta so each new character arrives once
+      xtermTa.addEventListener('compositionupdate', (e: CompositionEvent) => {
+        e.stopImmediatePropagation()
+        const newText = e.data ?? ''
+        if (newText.length > prevCompositionText.length) {
+          sendDirect(newText.slice(prevCompositionText.length))
+        } else if (newText.length < prevCompositionText.length) {
+          sendDirect('\x7f'.repeat(prevCompositionText.length - newText.length))
+        }
+        prevCompositionText = newText
+      }, true)
+
+      // compositionend: clear state; wipe textarea so the browser can't re-fill
+      xtermTa.addEventListener('compositionend', (e: CompositionEvent) => {
+        e.stopImmediatePropagation()
+        isComposing         = false
+        prevCompositionText = ''
+        xtermTa.value       = ''
+      }, true)
+
+      // input: ALWAYS stopImmediatePropagation — xterm.onData must never fire on
+      // mobile. Handle non-composing text (insertText, deleteContentBackward, …).
+      xtermTa.addEventListener('input', (e: Event) => {
+        e.stopImmediatePropagation()
+        xtermTa.value = ''
+        if (isComposing) return  // compositionupdate already sent the delta
+
+        const ie = e as InputEvent
+        if (ie.inputType === 'deleteContentBackward') {
+          if (!specialFromKeydown) sendDirect('\x7f')
+          specialFromKeydown = false
+          return
+        }
+        if (ie.inputType === 'insertLineBreak' || ie.inputType === 'insertParagraph') {
+          if (!specialFromKeydown) sendDirect('\r')
+          specialFromKeydown = false
+          return
+        }
+        specialFromKeydown = false
+        if (ie.data) sendDirect(ie.data)  // insertText and equivalents
       }, true)
     }
 
