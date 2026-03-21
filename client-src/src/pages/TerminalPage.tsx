@@ -369,19 +369,24 @@ export function TerminalPage() {
     }
 
     // ── Android IME composition fix ──────────────────────────────────────────
-    // Problem: Android keyboards use IME composition for text input. xterm.js
-    // only sends data on compositionend (triggered by space/punctuation), so
-    // characters accumulate invisibly and the cursor jumps word-by-word.
+    // Problem: Android keyboards use IME composition. xterm.js skips input
+    // events while isComposing=true, then on compositionend the browser
+    // re-inserts the full composed text into the textarea before firing input.
+    // xterm reads that value and sends the whole word → "ciao|ciao" effect.
     //
-    // Fix: intercept compositionupdate in capture phase (runs before xterm's
-    // bubble-phase listeners) to send each character delta immediately to the
-    // PTY. On compositionend, clear the textarea so xterm's own input handler
-    // sees an empty value and sends nothing (preventing double-send).
-    // The terminating character (space, etc.) is inserted into the now-empty
-    // textarea afterwards as a separate non-composing input event, which xterm
-    // handles normally — so it is correctly sent without any special casing.
+    // Fix:
+    //  1. compositionupdate (capture) — send each character delta immediately
+    //     and track exactly what was sent in `sentViaCompose`.
+    //  2. compositionend (capture) — set a flag.
+    //  3. input (capture, first event after compositionend) — strip sentViaCompose
+    //     from textarea.value before xterm's bubble-phase handler reads it.
+    //     This leaves only the terminating character (e.g. space) for xterm to
+    //     send normally. If textarea.value doesn't start with sentViaCompose
+    //     (autocorrect edge case) we leave it untouched so xterm handles it.
     if (xtermTa && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
-      let composingText = ''
+      let composingText        = ''   // current IME buffer
+      let sentViaCompose       = ''   // characters already forwarded to PTY
+      let compositionJustEnded = false
 
       const sendComposeDelta = (text: string) => {
         const ws2 = termMapRef.current.get(sessionId)?.ws
@@ -389,28 +394,45 @@ export function TerminalPage() {
       }
 
       xtermTa.addEventListener('compositionstart', () => {
-        composingText = ''
+        composingText        = ''
+        sentViaCompose       = ''
+        compositionJustEnded = false
       }, true)
 
       xtermTa.addEventListener('compositionupdate', (e: CompositionEvent) => {
         const newText = e.data ?? ''
         if (newText.length > composingText.length) {
-          // New characters added — send only the delta
-          sendComposeDelta(newText.slice(composingText.length))
+          const delta = newText.slice(composingText.length)
+          sendComposeDelta(delta)
+          sentViaCompose += delta
         } else if (newText.length < composingText.length) {
-          // Characters deleted during composition — send DEL for each
+          // Deletion during composition — send DEL characters
           const n = composingText.length - newText.length
           for (let i = 0; i < n; i++) sendComposeDelta('\x7f')
+          sentViaCompose = sentViaCompose.slice(0, newText.length)
         }
         composingText = newText
       }, true)
 
       xtermTa.addEventListener('compositionend', () => {
-        // Clear textarea before xterm's input event fires.
-        // compositionend always precedes the input event in Chrome/Android,
-        // so xterm's input handler reads '' and sends nothing (no double-send).
+        compositionJustEnded = true
         composingText = ''
-        xtermTa.value = ''
+      }, true)
+
+      // Runs in capture phase — before xterm's bubble-phase input handler.
+      // Strip the portion we already sent so xterm only sees the remainder
+      // (typically the space/punctuation that ended the composition).
+      xtermTa.addEventListener('input', () => {
+        if (!compositionJustEnded) return
+        compositionJustEnded = false
+        const current = xtermTa.value
+        if (current.startsWith(sentViaCompose)) {
+          // Remove already-sent characters; leave the terminating char for xterm
+          xtermTa.value = current.slice(sentViaCompose.length)
+        }
+        // If it doesn't start with sentViaCompose (e.g. autocorrect replaced
+        // the whole word) leave textarea.value untouched — xterm handles it.
+        sentViaCompose = ''
       }, true)
     }
 
