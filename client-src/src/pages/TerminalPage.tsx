@@ -314,17 +314,19 @@ export function TerminalPage() {
         }
       }, { passive: false })
 
-      overlay.addEventListener('touchend', () => {
+      overlay.addEventListener('touchend', (e: TouchEvent) => {
         if (isTap) {
-          // Focus xterm's helper textarea to open the virtual keyboard.
-          // NOTE: we override its CSS in globals.css to give it 1px size and
-          // left:0 — Android Chrome refuses to open the keyboard for elements
-          // that are zero-size or positioned off-screen (left:-9999em default).
+          // MUST call preventDefault() to suppress the synthetic click event that
+          // Android generates after touchend on a non-input element.
+          // Without this: focus() opens the keyboard for ~1 frame, then Android
+          // sees the synthetic click on a div (non-input) and immediately closes it.
+          // passive: false (below) is required to allow calling preventDefault().
+          e.preventDefault()
           term.focus()
           const ta = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (ta) ta.focus()
+          if (ta) ta.focus({ preventScroll: true })
         }
-      }, { passive: true })
+      }, { passive: false })
     }
 
     const inst: TermInstance = {
