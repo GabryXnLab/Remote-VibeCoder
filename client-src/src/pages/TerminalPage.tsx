@@ -491,34 +491,33 @@ export function TerminalPage() {
       // mobile. Handle non-composing text (insertText, deleteContentBackward, …).
       xtermTa.addEventListener('input', (e: Event) => {
         e.stopImmediatePropagation()
-        xtermTa.value = ''
-        if (isComposing) return  // compositionupdate already sent the delta
+        if (isComposing) { xtermTa.value = ''; return }  // compositionupdate owns this
 
         const ie = e as InputEvent
+        // CRITICAL: read textarea value BEFORE clearing it.
+        // On some Android keyboards ie.data is null for certain characters
+        // (e.g. space that terminates composition) — the actual char is only
+        // available in xtermTa.value at this point.
+        const valueBeforeClear = xtermTa.value
+        xtermTa.value = ''
 
         // ── Post-composition input ──────────────────────────────────────────
-        // The browser fires this right after compositionend. ie.data may be:
-        //   • the exact committed text (already sent) → nothing to do
-        //   • committed text + terminating char (e.g. 'ciao ') → send remainder
-        //   • just the terminating char (e.g. ' ', '@') → send it
-        //   • autocorrected word (completely different) → undo + resend
+        // The browser may fire one input event right after compositionend.
+        // ie.data can be:
+        //   • the exact committed text (already sent via compositionupdate) → skip
+        //   • committed text + terminating char ('ciao ') → send only the extra
+        //   • a new/separate character (' ', '@', …) → send it as-is
         if (compositionJustEnded) {
           compositionJustEnded = false
-          // ie.data is reliable (InputEvent property, not read from textarea).
-          // Fallback to xtermTa.value for older Android WebViews that omit it.
-          const data = ie.data ?? xtermTa.value
+          const data = ie.data ?? valueBeforeClear
           if (data && data !== lastCompositionText) {
             if (data.startsWith(lastCompositionText)) {
-              // Common case: committed text + terminating char → send the extra
-              sendDirect(data.slice(lastCompositionText.length))
-            } else if (lastCompositionText.startsWith(data)) {
-              // Keyboard sent a shorter/different string (e.g. just ' ') —
-              // this IS new content, send it
-              sendDirect(data)
+              // Browser bundled composition + terminator — send only the new part
+              const extra = data.slice(lastCompositionText.length)
+              if (extra) sendDirect(extra)
             } else {
-              // Autocorrect replaced the whole word. Undo what we sent then
-              // send the corrected text (uses unicode-aware spread for length).
-              sendDirect('\x7f'.repeat([...lastCompositionText].length))
+              // Unrelated new character (space, symbol) OR autocorrect.
+              // Send as-is — don't try to undo the composition (too error-prone).
               sendDirect(data)
             }
           }
@@ -537,8 +536,10 @@ export function TerminalPage() {
           return
         }
         specialFromKeydown = false
-        // insertText and equivalents — use ie.data (reliable) or textarea value
-        const text = ie.data ?? xtermTa.value
+        // insertText and all other inputs — prefer ie.data, fall back to the
+        // textarea value captured before clearing (handles null ie.data on older
+        // Android WebViews and keyboards where ie.data is unreliable).
+        const text = ie.data ?? valueBeforeClear
         if (text) sendDirect(text)
       }, true)
     }

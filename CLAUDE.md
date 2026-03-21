@@ -185,6 +185,65 @@ The overlay:
 5. tmux `mouse on` (in `pty.js`) is required for this to work — do not remove it.
 6. The overlay is only created on touch-capable devices (`'ontouchstart' in window || navigator.maxTouchPoints > 0`).
 
+---
+
+## xterm.js + tmux: Mobile Keyboard Input (Critical)
+
+### The Problem
+
+xterm.js's built-in keyboard handling **double-sends characters on Android** when IME composition is involved. The root cause: xterm registers an `input` event listener (bubble phase) on `.xterm-helper-textarea` that fires `term.onData`. Our own composition handlers (capture phase) also call `sendDirect`. On Android keyboards that use IME composition for Latin text (Gboard, Samsung keyboard), BOTH paths fire for the same character → `"cciiaaoo"`.
+
+A secondary problem: **space and non-letter characters (symbols, numbers, emoji) are silently dropped** when certain conditions align:
+
+1. `ie.data` is `null` on some Android keyboards for space/symbols (especially when space terminates a composition).
+2. `xtermTa.value` was cleared **before** being read as fallback → fallback is always `''` → `sendDirect` never called → character lost.
+3. The `compositionJustEnded` flag, if active, can send the wrong character if the post-composition `input` logic has incorrect branching (e.g. `lastCompositionText.startsWith(data)` is `false` for `' '` after `'ciao'` → falls into wrong else branch → sends backspaces instead of the character).
+
+### The Solution (Complete Mobile Input Bypass)
+
+**Architecture:** On touch-capable devices, intercept **all** keyboard/input events on `.xterm-helper-textarea` using **capture-phase listeners** (`addEventListener(..., true)`). Always call `e.stopImmediatePropagation()` so xterm's bubble-phase handlers never fire and `term.onData` is never triggered. Send everything directly via WebSocket — the same principle as the SGR scroll bypass.
+
+**Event handling map:**
+
+| Event | Action |
+|-------|--------|
+| `keydown` (capture) | `stopImmediatePropagation` always; handle Ctrl+key, arrow keys, F-keys, Backspace/Enter for hardware keyboards; set `specialFromKeydown` flag to prevent double-send from subsequent `input` |
+| `keypress` (capture) | `stopImmediatePropagation` always; xterm may listen here too |
+| `compositionstart` | Set `isComposing=true`, reset `prevCompositionText=''` |
+| `compositionupdate` | Send only the **delta** since last update: `e.data.slice(prevCompositionText.length)` |
+| `compositionend` | Set `isComposing=false`; save `prevCompositionText` → `lastCompositionText`; set `compositionJustEnded=true`; clear `xtermTa.value=''` |
+| `input` (capture) | `stopImmediatePropagation` always; read `valueBeforeClear = xtermTa.value` **BEFORE** clearing; handle post-composition, deleteContentBackward, insertLineBreak, then `sendDirect(ie.data ?? valueBeforeClear)` |
+
+**Critical implementation details:**
+
+```javascript
+// WRONG — fallback is useless:
+xtermTa.value = ''
+const text = ie.data ?? xtermTa.value  // xtermTa.value is already ''!
+
+// CORRECT — read before clearing:
+const valueBeforeClear = xtermTa.value
+xtermTa.value = ''
+const text = ie.data ?? valueBeforeClear
+```
+
+**`compositionJustEnded` logic** (for the `input` event that fires right after `compositionend`):
+```
+data === lastCompositionText  →  skip (already sent via compositionupdate)
+data.startsWith(lastCompositionText)  →  send only data.slice(lastCompositionText.length)
+else  →  send data as-is (new char like space/symbol, or autocorrect)
+```
+The `else` branch intentionally does NOT attempt to undo the composition (no backspaces). Autocorrect is the only case this mishandles, and it's rare in a terminal context.
+
+### Rules for Future Mobile Keyboard Input Work
+
+1. **NEVER let xterm handle input on mobile** — `term.onData` must never fire. Every keyboard event must be stopped in capture phase with `stopImmediatePropagation`.
+2. **NEVER clear `xtermTa.value` before reading it** — `ie.data` can be `null` on Android keyboards (especially for space that terminates composition). `valueBeforeClear = xtermTa.value` must be saved **first**.
+3. **NEVER rely on `e.isComposing`** — it's unreliable on Android (may stay `false` during composition). Use an explicit `isComposing` flag driven by `compositionstart`/`compositionend`.
+4. **NEVER use `lastCompositionText.startsWith(data)`** as a condition — `'ciao'.startsWith(' ')` is `false`, so space after a word falls into the wrong branch.
+5. The `compositionJustEnded` flag resets after the first `input` event post-`compositionend`. If no such `input` fires (some keyboards omit it), the flag stays `true` until the next input — the simplified else logic still handles this correctly.
+6. Emoji work via `input(insertText, ie.data='😀')` without composition — the normal `sendDirect(ie.data ?? valueBeforeClear)` path handles them.
+
 ### Related: Frontend Build Pipeline
 
 - `client-src/` → Vite builds to `dist/` → server serves `dist/`
