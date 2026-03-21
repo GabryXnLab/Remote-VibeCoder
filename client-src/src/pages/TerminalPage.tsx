@@ -368,6 +368,52 @@ export function TerminalPage() {
       xtermTa.setAttribute('data-gramm_editor', 'false')
     }
 
+    // ── Android IME composition fix ──────────────────────────────────────────
+    // Problem: Android keyboards use IME composition for text input. xterm.js
+    // only sends data on compositionend (triggered by space/punctuation), so
+    // characters accumulate invisibly and the cursor jumps word-by-word.
+    //
+    // Fix: intercept compositionupdate in capture phase (runs before xterm's
+    // bubble-phase listeners) to send each character delta immediately to the
+    // PTY. On compositionend, clear the textarea so xterm's own input handler
+    // sees an empty value and sends nothing (preventing double-send).
+    // The terminating character (space, etc.) is inserted into the now-empty
+    // textarea afterwards as a separate non-composing input event, which xterm
+    // handles normally — so it is correctly sent without any special casing.
+    if (xtermTa && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+      let composingText = ''
+
+      const sendComposeDelta = (text: string) => {
+        const ws2 = termMapRef.current.get(sessionId)?.ws
+        if (ws2?.readyState === WebSocket.OPEN) ws2.send(text)
+      }
+
+      xtermTa.addEventListener('compositionstart', () => {
+        composingText = ''
+      }, true)
+
+      xtermTa.addEventListener('compositionupdate', (e: CompositionEvent) => {
+        const newText = e.data ?? ''
+        if (newText.length > composingText.length) {
+          // New characters added — send only the delta
+          sendComposeDelta(newText.slice(composingText.length))
+        } else if (newText.length < composingText.length) {
+          // Characters deleted during composition — send DEL for each
+          const n = composingText.length - newText.length
+          for (let i = 0; i < n; i++) sendComposeDelta('\x7f')
+        }
+        composingText = newText
+      }, true)
+
+      xtermTa.addEventListener('compositionend', () => {
+        // Clear textarea before xterm's input event fires.
+        // compositionend always precedes the input event in Chrome/Android,
+        // so xterm's input handler reads '' and sends nothing (no double-send).
+        composingText = ''
+        xtermTa.value = ''
+      }, true)
+    }
+
     connectSession(sessionId, inst)
   }, [isDark, connectSession])
 
