@@ -271,8 +271,10 @@ export function TerminalPage() {
       container.appendChild(overlay)
 
       let touchStartY = 0
+      let tapStartY   = 0  // punto fisso per rilevare tap vs scroll
       let touchAccum  = 0
       let isTap       = true
+      const TAP_THRESHOLD = 10  // px
 
       const sendWheelToTmux = (direction: 'up' | 'down', count: number) => {
         const inst = termMapRef.current.get(sessionId)
@@ -288,17 +290,21 @@ export function TerminalPage() {
 
       overlay.addEventListener('touchstart', (e: TouchEvent) => {
         touchStartY = e.touches[0].clientY
+        tapStartY   = e.touches[0].clientY
         touchAccum  = 0
         isTap       = true
       }, { passive: true })
 
       overlay.addEventListener('touchmove', (e: TouchEvent) => {
         e.preventDefault()
-        isTap = false
         const currentY = e.touches[0].clientY
-        const deltaY   = touchStartY - currentY  // positive = finger up = scroll down (see older)
-        touchStartY    = currentY
-        touchAccum    += deltaY
+        // Solo oltre la soglia è un vero scroll, non un tremolìo da tap
+        if (Math.abs(currentY - tapStartY) > TAP_THRESHOLD) {
+          isTap = false
+        }
+        const deltaY = touchStartY - currentY  // positivo = dito su = scroll verso contenuto vecchio
+        touchStartY  = currentY
+        touchAccum  += deltaY
         const lh = (term.options.fontSize || 13) * (term.options.lineHeight || 1.3)
         const lines = Math.abs(Math.trunc(touchAccum / lh))
         if (lines > 0) {
@@ -309,7 +315,12 @@ export function TerminalPage() {
       }, { passive: false })
 
       overlay.addEventListener('touchend', () => {
-        if (isTap) term.focus()
+        if (isTap) {
+          term.focus()
+          // Focus esplicito sulla textarea di xterm per aprire la tastiera su iOS
+          const ta = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+          if (ta) ta.focus()
+        }
       }, { passive: true })
     }
 
@@ -491,23 +502,25 @@ export function TerminalPage() {
 
   // ── Space-hold mic (simulates holding Space for Claude Code voice mode) ──
   const [isHoldingSpace, setIsHoldingSpace] = useState(false)
+  const spaceTimeoutRef  = useRef<ReturnType<typeof setTimeout>  | null>(null)
   const spaceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const startSpaceHold = useCallback(() => {
-    if (spaceIntervalRef.current) return // already holding
+    if (spaceTimeoutRef.current || spaceIntervalRef.current) return
     setIsHoldingSpace(true)
-    sendToWs(' ') // initial space keypress
-    // simulate key repeat after OS-like delay
-    const timeout = setTimeout(() => {
+    sendToWs(' ')
+    spaceTimeoutRef.current = setTimeout(() => {
+      spaceTimeoutRef.current = null
       spaceIntervalRef.current = setInterval(() => sendToWs(' '), 50)
-    }, 400) // typical key repeat delay
-    // store timeout so we can clear it on release
-    spaceIntervalRef.current = timeout as unknown as ReturnType<typeof setInterval>
+    }, 400)
   }, [sendToWs])
 
   const stopSpaceHold = useCallback(() => {
+    if (spaceTimeoutRef.current) {
+      clearTimeout(spaceTimeoutRef.current)
+      spaceTimeoutRef.current = null
+    }
     if (spaceIntervalRef.current) {
-      clearTimeout(spaceIntervalRef.current as unknown as ReturnType<typeof setTimeout>)
       clearInterval(spaceIntervalRef.current)
       spaceIntervalRef.current = null
     }
