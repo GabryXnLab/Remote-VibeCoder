@@ -369,28 +369,23 @@ export function TerminalPage() {
     }
 
     // ── Android IME composition fix ──────────────────────────────────────────
-    // ROOT CAUSE: xterm.js has a compositionHelper that renders an OVERLAY div
-    // on the terminal canvas showing the text being composed. This overlay
-    // appears to the right of the cursor, causing the "ciao|ciao" visual
-    // duplication: left side = PTY output (our sends), right side = xterm's
-    // visual overlay. Previous attempts only tried to fix the data side but
-    // left xterm's visual compositionHelper running.
+    // Problem: xterm.js has a compositionHelper that renders a visual overlay
+    // on the terminal canvas (causing "ciao|ciao"), AND its input handler
+    // double-sends composed text.
     //
-    // SOLUTION (same philosophy as the scroll fix in CLAUDE.md — bypass xterm
-    // completely and talk directly to the PTY):
+    // Previous attempt used e.isComposing to gate logic, but e.isComposing is
+    // unreliable on some Android keyboards (may stay false during composition).
+    // When it was false: prevComposingValue stayed '', and startsWith('') is
+    // always true → every character was sent again in the post-composition
+    // branch → "cciiaaoo".
     //
-    // 1. stopImmediatePropagation() on compositionstart/update/end in capture
-    //    phase → xterm's compositionHelper never runs → no visual overlay.
-    // 2. Track delta in the `input` event (isComposing:true) and send each
-    //    new character directly to the PTY via WebSocket.
-    // 3. On the first `input` after compositionend (isComposing:false):
-    //    strip the already-sent text from textarea.value, send only the
-    //    remainder (the terminating char, e.g. space), clear the textarea.
-    //    stopImmediatePropagation() prevents xterm from double-sending.
-    // 4. Non-composition input events (isComposing:false, not post-composition)
-    //    are left alone — xterm handles them normally.
+    // Fix: use our own isInComposition flag (set by compositionstart/end, which
+    // ARE reliable) instead of e.isComposing. Send data in compositionupdate
+    // (has canonical e.data). Block all input events during composition with
+    // stopImmediatePropagation so xterm never touches them.
     if (xtermTa && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
-      let prevComposingValue   = ''    // xtermTa.value as of last composing input
+      let prevComposingValue = ''    // text sent so far in current composition
+      let isInComposition    = false // reliable flag from compositionstart/end
       let compositionJustEnded = false
 
       const sendDirect = (text: string) => {
@@ -398,49 +393,48 @@ export function TerminalPage() {
         if (ws2?.readyState === WebSocket.OPEN) ws2.send(text)
       }
 
-      // Prevent xterm's compositionHelper from creating/updating its visual
-      // overlay div. Must use stopImmediatePropagation (not stopPropagation)
-      // to also suppress same-phase listeners registered after ours.
       xtermTa.addEventListener('compositionstart', (e) => {
-        e.stopImmediatePropagation()
-        prevComposingValue   = ''
+        e.stopImmediatePropagation()   // block xterm's compositionHelper overlay
+        isInComposition    = true
+        prevComposingValue = ''
         compositionJustEnded = false
       }, true)
 
-      xtermTa.addEventListener('compositionupdate', (e) => {
-        e.stopImmediatePropagation()
-        // Data is handled in the input event below; we only block xterm here.
+      // Send delta here — compositionupdate has reliable e.data on all keyboards.
+      xtermTa.addEventListener('compositionupdate', (e: CompositionEvent) => {
+        e.stopImmediatePropagation()   // block xterm's compositionHelper overlay
+        const newText = e.data ?? ''
+        if (newText.length > prevComposingValue.length) {
+          sendDirect(newText.slice(prevComposingValue.length))
+        } else if (newText.length < prevComposingValue.length) {
+          const n = prevComposingValue.length - newText.length
+          for (let i = 0; i < n; i++) sendDirect('\x7f')
+        }
+        prevComposingValue = newText
       }, true)
 
       xtermTa.addEventListener('compositionend', (e) => {
-        e.stopImmediatePropagation()
+        e.stopImmediatePropagation()   // block xterm's compositionHelper cleanup
+        isInComposition    = false
         compositionJustEnded = true
+        // Clear now so the browser can't append committed text on top of the
+        // composition placeholder, which would make xtermTa.value = "cc" and
+        // cause the post-composition input handler to re-send "c".
+        xtermTa.value = ''
       }, true)
 
       xtermTa.addEventListener('input', (e: Event) => {
-        if ((e as InputEvent).isComposing) {
-          // Block xterm from processing composing input (xterm's _compositionHelper
-          // .isComposing would normally be true here, but since we stopped
-          // compositionstart from reaching it, it's false — so xterm WOULD
-          // try to send xtermTa.value without our block).
+        if (isInComposition) {
+          // Block xterm from processing any input while we're composing.
+          // Data is already sent character-by-character in compositionupdate.
           e.stopImmediatePropagation()
-          const current = xtermTa.value
-          // Delta: send only the characters added since the last composing input
-          if (current.length > prevComposingValue.length) {
-            sendDirect(current.slice(prevComposingValue.length))
-          } else if (current.length < prevComposingValue.length) {
-            // Deletion during composition
-            const n = prevComposingValue.length - current.length
-            for (let i = 0; i < n; i++) sendDirect('\x7f')
-          }
-          prevComposingValue = current
           return
         }
 
         if (compositionJustEnded) {
-          // First non-composing input after compositionend: xtermTa.value
-          // contains the committed word + possibly the terminating char.
-          // Strip what we already sent; send only the new part (e.g. space).
+          // First input after compositionend: may contain the terminating
+          // character (e.g. space). Strip the already-sent composition text
+          // and send only the remainder.
           e.stopImmediatePropagation()
           compositionJustEnded = false
           const current = xtermTa.value
