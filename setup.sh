@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Remote VibeCoder — setup.sh
-# Installs and configures Claude Code mobile access on a GCP e2-micro VM.
+# Installs and configures Claude Code mobile access on a Linux VPS.
 # Run as your normal user (not root). Uses sudo internally.
 #
-# Usage: bash setup.sh
+# Usage: bash setup.sh [--profile=e2-micro|standard] [--skip-gcloud|--force-gcloud]
 
 set -euo pipefail
 
@@ -20,13 +20,62 @@ warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
 error()   { echo -e "${RED}✗ $*${NC}" >&2; }
 header()  { echo -e "\n${BOLD}${CYAN}══════════════════════════════════════${NC}"; echo -e "${BOLD}  $*${NC}"; echo -e "${BOLD}${CYAN}══════════════════════════════════════${NC}\n"; }
 
+# ─── Argument parsing ────────────────────────────────────────────────────────
+PROFILE=""
+SKIP_GCLOUD=false
+FORCE_GCLOUD=false
+for arg in "$@"; do
+  case "$arg" in
+    --profile=*) PROFILE="${arg#*=}" ;;
+    --skip-gcloud) SKIP_GCLOUD=true ;;
+    --force-gcloud) FORCE_GCLOUD=true ;;
+    --help|-h)
+      echo "Usage: bash setup.sh [--profile=e2-micro|standard] [--skip-gcloud|--force-gcloud]"
+      echo ""
+      echo "  --profile=NAME    Force a specific resource profile (default: auto-detect from RAM)"
+      echo "                    Available: e2-micro (1GB), standard (4GB+)"
+      echo "  --skip-gcloud     Skip Google Cloud SDK installation"
+      echo "  --force-gcloud    Force Google Cloud SDK installation even on non-GCP machines"
+      exit 0
+      ;;
+  esac
+done
+
 WHOAMI=$(whoami)
 HOME_DIR="$HOME"
-APP_DIR="$HOME_DIR/claude-mobile"
 REPOS_DIR="$HOME_DIR/repos"
 CONFIG_DIR="$HOME_DIR/.claude-mobile"
 CONFIG_FILE="$CONFIG_DIR/config.json"
-REPO_URL="https://github.com/GabryXn/Remote-VibeCoder.git"
+
+# ─── Profile detection ───────────────────────────────────────────────────────
+# SCRIPT_DIR: percorso assoluto della directory del presente script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -z "$PROFILE" ]; then
+  # Auto-detect: legge RAM totale da /proc/meminfo (più affidabile di free -g)
+  TOTAL_RAM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+  TOTAL_RAM_GB=$(( TOTAL_RAM_KB / 1024 / 1024 ))
+  if [ "$TOTAL_RAM_GB" -lt 2 ]; then
+    PROFILE="e2-micro"
+    info "Auto-detected: ${TOTAL_RAM_GB}GB RAM → profile e2-micro"
+  else
+    PROFILE="standard"
+    info "Auto-detected: ${TOTAL_RAM_GB}GB RAM → profile standard"
+  fi
+fi
+
+PROFILE_FILE="$SCRIPT_DIR/config/profiles/${PROFILE}.env"
+if [ ! -f "$PROFILE_FILE" ]; then
+  error "Profile '${PROFILE}' not found: $PROFILE_FILE"
+  error "Available profiles: $(ls "$SCRIPT_DIR/config/profiles/" 2>/dev/null | sed 's/\.env//' | tr '\n' ' ')"
+  exit 1
+fi
+
+# shellcheck source=/dev/null
+source "$PROFILE_FILE"
+
+# APP_DIR deriva dal profilo (APP_SUBDIR è definito nel file .env)
+APP_DIR="$HOME_DIR/${APP_SUBDIR}"
 
 # ─── Step 0: Banner ──────────────────────────────────────────────────────────
 clear
@@ -121,26 +170,40 @@ else
   success "GitHub CLI installed: $(gh --version | head -n 1)"
 fi
 
-# ─── Step 2.5: Google Cloud SDK ──────────────────────────────────────────────
-header "Step 2.5 / 10 — Google Cloud SDK"
-if command -v gcloud &>/dev/null; then
-  success "Google Cloud SDK already installed: $(gcloud --version | head -n 1)"
-else
-  info "Installing Google Cloud CLI…"
-  # Import the Google Cloud public key
-  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg || true
-  # Add the gcloud CLI distribution URI as a package source
-  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
-  # Update and install the gcloud CLI
-  sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-cli
-  success "Google Cloud CLI installed"
+# ─── Step 2.5: Google Cloud SDK (opzionale — solo su GCP) ────────────────────
+_should_install_gcloud=false
+if [ "$SKIP_GCLOUD" = "false" ]; then
+  if [ "$FORCE_GCLOUD" = "true" ]; then
+    _should_install_gcloud=true
+  elif curl -sf --max-time 2 -H "Metadata-Flavor: Google" \
+         http://metadata.google.internal/computeMetadata/v1/ >/dev/null 2>&1; then
+    _should_install_gcloud=true
+  fi
 fi
 
-info "Installing gcloud alpha and beta components…"
-# Install alpha/beta components (both via apt and gcloud to ensure availability)
-sudo apt-get install -y -qq google-cloud-cli-alpha google-cloud-cli-beta || true
-sudo gcloud components install alpha beta --quiet || warn "Could not install components via gcloud (this is expected if managed by apt)"
-success "Google Cloud SDK components (alpha/beta) ready"
+if [ "$_should_install_gcloud" = "true" ]; then
+  header "Step 2.5 / 10 — Google Cloud SDK"
+  if command -v gcloud &>/dev/null; then
+    success "Google Cloud SDK already installed: $(gcloud --version | head -n 1)"
+  else
+    info "Installing Google Cloud CLI…"
+    # Import the Google Cloud public key
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg || true
+    # Add the gcloud CLI distribution URI as a package source
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+    # Update and install the gcloud CLI
+    sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-cli
+    success "Google Cloud CLI installed"
+  fi
+
+  info "Installing gcloud alpha and beta components…"
+  # Install alpha/beta components (both via apt and gcloud to ensure availability)
+  sudo apt-get install -y -qq google-cloud-cli-alpha google-cloud-cli-beta || true
+  sudo gcloud components install alpha beta --quiet || warn "Could not install components via gcloud (this is expected if managed by apt)"
+  success "Google Cloud SDK components (alpha/beta) ready"
+else
+  info "Step 2.5 skipped — not on GCP (use --force-gcloud to install anyway)"
+fi
 
 # ─── Step 3: Node.js LTS (via nvm, no sudo) ──────────────────────────────────
 header "Step 3 / 10 — Node.js LTS"
@@ -317,8 +380,11 @@ ask "  GitHub PAT: " GITHUB_PAT
 # GitHub username
 echo ""
 echo -e "${YELLOW}Your GitHub username:${NC}"
-ask "  Username [GabryXn]: " GITHUB_USER
-GITHUB_USER="${GITHUB_USER:-GabryXn}"
+ask "  Username: " GITHUB_USER
+[ -z "$GITHUB_USER" ] && { error "GitHub username cannot be empty"; exit 1; }
+
+# REPO_URL deriva dall'username (aggiornata automaticamente per fork)
+REPO_URL="https://github.com/${GITHUB_USER}/Remote-VibeCoder.git"
 
 # Domain
 echo ""
@@ -420,6 +486,19 @@ NGINXEOF"
 sudo nginx -t && sudo systemctl reload nginx
 success "nginx configured with TLS + WebSocket proxy for ${DOMAIN}"
 
+# ─── Generate service file from template ─────────────────────────────────────
+info "Generating systemd service file (profile: ${PROFILE_NAME})…"
+sed \
+  -e "s|__PROFILE_NAME__|${PROFILE_NAME}|g" \
+  -e "s|__NODE_FLAGS__|${NODE_FLAGS}|g" \
+  -e "s|__MEMORY_HIGH__|${MEMORY_HIGH}|g" \
+  -e "s|__MEMORY_MAX__|${MEMORY_MAX}|g" \
+  -e "s|__UV_THREADPOOL__|${UV_THREADPOOL}|g" \
+  -e "s|__APP_SUBDIR__|${APP_SUBDIR}|g" \
+  "$SCRIPT_DIR/config/claude-mobile.service.tmpl" \
+  > "$APP_DIR/config/claude-mobile.service"
+success "Service file generated at $APP_DIR/config/claude-mobile.service"
+
 # ─── Step 10: systemd services ───────────────────────────────────────────────
 header "Step 10 / 10 — systemd Services"
 
@@ -503,6 +582,7 @@ echo -e "${BOLD}${GREEN}══════════════════�
 echo ""
 echo -e "  ${BOLD}URL:${NC}      https://${DOMAIN}"
 echo -e "  ${BOLD}Password:${NC} (the one you just set)"
+echo -e "  ${BOLD}Profile:${NC}  ${PROFILE_NAME} (MemoryMax: ${MEMORY_MAX})"
 echo ""
 echo -e "${YELLOW}${BOLD}Important — Authenticate Claude Code:${NC}"
 echo -e "  After opening the terminal in your browser, run:"
