@@ -1,4 +1,4 @@
-name: Deploy to GCP VM
+name: Deploy to VM
 
 on:
   push:
@@ -32,9 +32,15 @@ jobs:
         run: cd client-src && npm run build
 
   deploy:
-    name: SSH deploy → e2-micro
+    name: SSH deploy → VM
     runs-on: ubuntu-latest
     needs: [audit, typecheck]
+
+    # APP_DIR: subdirectory app sotto $HOME sul server (default: claude-mobile)
+    # Configurabile come GitHub repository variable (non secret — non è un dato sensibile)
+    env:
+      APP_DIR: ${{ vars.APP_DIR || 'claude-mobile' }}
+      REPO_SLUG: ${{ github.repository }}
 
     steps:
       - name: Checkout (for changed-files detection)
@@ -53,7 +59,7 @@ jobs:
           echo "Changed files:"
           cat changed.txt
 
-          if grep -q 'config/claude-mobile.service' changed.txt; then
+          if grep -qE 'config/claude-mobile\.service(\.tmpl)?$' changed.txt; then
             echo "service_changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "service_changed=false" >> "$GITHUB_OUTPUT"
@@ -65,28 +71,28 @@ jobs:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: SERVICE_CHANGED,GH_PAT
+          envs: SERVICE_CHANGED,GH_PAT,APP_DIR,REPO_SLUG
           script_stop: true
           script: |
             set -euo pipefail
 
             echo "── Pulling latest code ──"
-            git -C ~/claude-mobile fetch "https://x-access-token:${GH_PAT}@github.com/GabryXn/Remote-VibeCoder.git" master
-            git -C ~/claude-mobile reset --hard FETCH_HEAD
+            git -C ~/$APP_DIR fetch "https://x-access-token:${GH_PAT}@github.com/${REPO_SLUG}.git" master
+            git -C ~/$APP_DIR reset --hard FETCH_HEAD
 
             echo "── Installing server dependencies ──"
-            cd ~/claude-mobile/server && npm install --omit=dev
+            cd ~/$APP_DIR/server && npm install --omit=dev
 
             echo "── Installing frontend dependencies ──"
-            cd ~/claude-mobile/client-src && npm install
+            cd ~/$APP_DIR/client-src && npm install
 
             echo "── Building frontend (Vite → dist/) ──"
-            cd ~/claude-mobile/client-src && npm run build
+            cd ~/$APP_DIR/client-src && npm run build
 
             if [ "${SERVICE_CHANGED:-false}" = "true" ]; then
               echo "── Updating systemd unit ──"
               SERVICE="claude-mobile@$(whoami).service"
-              sudo cp ~/claude-mobile/config/claude-mobile.service "/etc/systemd/system/$SERVICE"
+              sudo cp ~/$APP_DIR/config/claude-mobile.service "/etc/systemd/system/$SERVICE"
               sudo systemctl daemon-reload
             fi
 
