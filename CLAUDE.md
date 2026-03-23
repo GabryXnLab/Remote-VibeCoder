@@ -265,6 +265,45 @@ This installs Node.js, tmux, nginx, certbot (or Cloudflare Tunnel), Claude Code 
 
 Public URL: `https://gabry-remote-vibecoder.duckdns.org` (DuckDNS free subdomain → VM static IP `34.138.166.193`)
 
+## Migration Guide
+
+Per migrare su un nuovo server (es. Oracle Cloud, Hetzner, ecc.):
+
+```bash
+# 1. Clona il repo sul nuovo server
+git clone https://github.com/<user>/Remote-VibeCoder.git ~/claude-mobile
+
+# 2. Esegui setup.sh (auto-rileva profilo in base alla RAM)
+bash ~/claude-mobile/setup.sh
+
+# 3. Per forzare un profilo specifico:
+bash ~/claude-mobile/setup.sh --profile=standard
+
+# 4. Su macchine non-GCP il gcloud install è saltato automaticamente.
+#    Per installarlo comunque: --force-gcloud
+#    Per saltarlo esplicitamente: --skip-gcloud
+```
+
+**Profili disponibili** (`config/profiles/`):
+
+| Profilo | RAM target | Node.js heap | MemoryMax | UV_THREADPOOL |
+|---------|-----------|-------------|-----------|---------------|
+| `e2-micro` | 1GB (GCP e2-micro) | 256MB | 512M | 2 |
+| `standard` | 4GB+ (Oracle A1, Hetzner CX22+) | 512MB | 1536M | 4 |
+
+**GitHub Actions — secrets/vars per il nuovo server:**
+
+| Nome | Tipo | Descrizione |
+|------|------|-------------|
+| `VM_HOST` | Secret | IP o hostname SSH del nuovo server |
+| `VM_USER` | Secret | Username SSH |
+| `SSH_PRIVATE_KEY` | Secret | Chiave privata SSH |
+| `APP_DIR` | Variable (non secret) | Subdirectory app sotto `$HOME` (default: `claude-mobile`) |
+
+Il `REPO_URL` nel deploy è automatico (`github.repository`) — non serve configurarlo.
+
+**Nota:** Il blocco sysctl in `setup.sh` (Step 1b) usa valori conservativi per 1GB RAM. Su macchine con più RAM funziona ma non è ottimizzato — aggiustamento manuale post-migrazione se necessario.
+
 ## Config Schema (`~/.claude-mobile/config.json`)
 
 ```json
