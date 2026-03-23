@@ -56,7 +56,7 @@ interface SyncStatus {
   files:        GitFile[]
 }
 
-type SyncState = 'loading' | 'synced' | 'local-changes' | 'behind' | 'diverged' | 'unknown'
+type SyncState = 'loading' | 'synced' | 'local-changes' | 'ahead' | 'behind' | 'diverged' | 'unknown'
 
 interface RepoWithSync extends Repo {
   gitStatus?:  GitStatus
@@ -90,19 +90,22 @@ function fileStatusInfo(f: GitFile): { label: string; colors: { bg: string; text
 
 function computeSyncState(ss: SyncStatus): SyncState {
   if (ss.localChanges && ss.behind > 0) return 'diverged'
-  if (ss.localChanges || ss.ahead > 0)  return 'local-changes'
+  if (ss.localChanges)                  return 'local-changes'
+  if (ss.ahead > 0 && ss.behind > 0)   return 'diverged'
+  if (ss.ahead > 0)                     return 'ahead'
   if (ss.behind > 0)                    return 'behind'
   if (ss.synced)                        return 'synced'
   return 'unknown'
 }
 
 const SYNC_DISPLAY: Record<SyncState, { label: string; color: string }> = {
-  'loading':       { label: '...',             color: 'var(--text-dim)' },
-  'synced':        { label: 'Synced',          color: '#4caf50' },
-  'local-changes': { label: 'Local changes',   color: '#e8d44d' },
-  'behind':        { label: 'Updates available', color: '#5db8e8' },
-  'diverged':      { label: 'Diverged',        color: '#e8a85d' },
-  'unknown':       { label: 'Unknown',         color: 'var(--text-dim)' },
+  'loading':       { label: '...',               color: 'var(--text-dim)' },
+  'synced':        { label: 'Synced',            color: '#4caf50' },
+  'local-changes': { label: 'Local changes',     color: '#e8d44d' },
+  'ahead':         { label: 'Push pending',      color: '#e8d44d' },
+  'behind':        { label: 'Updates available',  color: '#5db8e8' },
+  'diverged':      { label: 'Diverged',          color: '#e8a85d' },
+  'unknown':       { label: 'Unknown',           color: 'var(--text-dim)' },
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -369,6 +372,29 @@ export function ProjectsPage() {
     }
   }
 
+  async function handlePush(repo: string, btn: HTMLButtonElement) {
+    const orig = btn.textContent ?? ''
+    btn.disabled = true
+    btn.textContent = '...'
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/push`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(d.error ?? `Push failed (${res.status})`)
+      }
+      btn.textContent = '✓'
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
+      await loadAll()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Push failed')
+      btn.disabled = false
+      btn.textContent = orig
+    }
+  }
+
   async function handleOpen(repo: string, btn: HTMLButtonElement, shell = false) {
     const orig = btn.textContent ?? ''
     btn.disabled = true
@@ -474,15 +500,22 @@ export function ProjectsPage() {
           push:        commitPush,
         }),
       })
-      const data = await res.json().catch(() => ({})) as { error?: string }
-      if (!res.ok) throw new Error(data.error ?? `Commit failed (${res.status})`)
+      const data = await res.json().catch(() => ({})) as { error?: string; pushed?: boolean; pushError?: string }
+      if (!res.ok && res.status !== 207) throw new Error(data.error ?? `Commit failed (${res.status})`)
+
+      const pushFailed = res.status === 207 && data.pushed === false
 
       closeCommitModal()
 
-      // Optimistically mark repo as local-changes (or synced if pushed) while loadAll runs
+      if (pushFailed) {
+        setError(`Commit completato, ma il push è fallito: ${data.pushError ?? 'errore sconosciuto'}. Puoi riprovare con il pulsante Push.`)
+      }
+
+      // Optimistically mark repo sync state while loadAll runs
+      const newSyncState: SyncState = (commitPush && !pushFailed) ? 'synced' : 'ahead'
       setRepos(prev => prev.map(r =>
         r.name === commitRepo
-          ? { ...r, gitStatus: undefined, syncState: commitPush ? 'synced' : 'local-changes' }
+          ? { ...r, gitStatus: undefined, syncState: newSyncState }
           : r
       ))
 
@@ -548,6 +581,7 @@ export function ProjectsPage() {
         )
       }
       const changeCount = repo.gitStatus?.files.length ?? repo.syncStatus?.files.length ?? 0
+      const aheadCount  = repo.syncStatus?.ahead ?? 0
       return (
         <div className={styles.actionRow}>
           <Button variant="primary" size="sm"
@@ -557,6 +591,14 @@ export function ProjectsPage() {
             title="git pull (with conflict check)"
             onClick={e => handlePull(repo.name, e.currentTarget as HTMLButtonElement)}
           >↓ Pull</Button>
+          {aheadCount > 0 && changeCount === 0 && (
+            <Button
+              variant="git"
+              size="sm"
+              title={`${aheadCount} commit${aheadCount !== 1 ? 's' : ''} da pushare`}
+              onClick={e => handlePush(repo.name, e.currentTarget as HTMLButtonElement)}
+            >↑ Push {aheadCount}</Button>
+          )}
           {changeCount > 0 && (
             <Button
               variant="git"

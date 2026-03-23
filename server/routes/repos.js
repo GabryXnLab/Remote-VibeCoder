@@ -141,7 +141,7 @@ router.post('/clone', async (req, res) => {
     const cloneUrl = `https://github.com/${username}/${name}.git`;
 
     await withGitCredentials(token, REPOS_DIR, (git) =>
-      git.clone(cloneUrl, destPath)
+      git.timeout({ block: 60000 }).clone(cloneUrl, destPath)
     );
 
     // Invalidate repos cache so the clone status updates immediately
@@ -175,7 +175,9 @@ router.post('/pull', async (req, res) => {
     const cfg   = config.get();
     const token = cfg.githubPat || process.env.GITHUB_PAT;
 
-    const result = await withGitCredentials(token, repoPath, (git) => git.pull());
+    const result = await withGitCredentials(token, repoPath, (git) =>
+      git.timeout({ block: 30000 }).pull('origin')
+    );
     res.json({ ok: true, result });
   } catch (err) {
     console.error('[repos] pull error:', err);
@@ -260,9 +262,9 @@ router.post('/force-pull', async (req, res) => {
     const localStatus = await git.status();
     const branch = localStatus.current || 'main';
 
-    // Fetch latest from remote (needs credentials)
+    // Fetch latest from remote (needs credentials, 30s timeout)
     await withGitCredentials(token, resolved, (credGit) =>
-      credGit.timeout({ block: 15000 }).fetch('origin')
+      credGit.timeout({ block: 30000 }).fetch('origin')
     );
 
     // Hard-reset to remote state, discarding all local changes and commits
@@ -471,18 +473,68 @@ router.post('/:name/commit', async (req, res) => {
       .commit(message.trim());
 
     if (doPush) {
-      const cfg    = config.get();
-      const token  = cfg.githubPat || process.env.GITHUB_PAT;
-      const status = await git.status();
-      const branch = status.current;
-      await withGitCredentials(token, resolved, (credGit) =>
-        credGit.push('origin', branch)
-      );
+      try {
+        const cfg    = config.get();
+        const token  = cfg.githubPat || process.env.GITHUB_PAT;
+        const status = await git.status();
+        const branch = status.current;
+        await withGitCredentials(token, resolved, (credGit) =>
+          credGit.timeout({ block: 30000 }).push('origin', branch)
+        );
+        res.json({ ok: true, commit: commitResult.commit, pushed: true });
+      } catch (pushErr) {
+        console.error('[repos] push error (commit succeeded):', pushErr);
+        // Commit was successful but push failed — return partial success
+        res.status(207).json({
+          ok:          true,
+          commit:      commitResult.commit,
+          pushed:      false,
+          pushError:   pushErr.message,
+        });
+      }
+    } else {
+      res.json({ ok: true, commit: commitResult.commit, pushed: false });
     }
-
-    res.json({ ok: true, commit: commitResult.commit });
   } catch (err) {
     console.error('[repos] commit error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/repos/:name/push ──────────────────────────────────────────────
+router.post('/:name/push', async (req, res) => {
+  const { name } = req.params;
+  if (!name || !/^[a-zA-Z0-9_.\-]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid repo name' });
+  }
+
+  const repoPath = path.join(REPOS_DIR, name);
+  if (!fs.existsSync(repoPath)) {
+    return res.status(404).json({ error: 'Repo not cloned locally' });
+  }
+
+  try {
+    const resolved = fs.realpathSync(repoPath);
+    if (resolved !== repoPath && !resolved.startsWith(REPOS_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+
+    const cfg    = config.get();
+    const token  = cfg.githubPat || process.env.GITHUB_PAT;
+    const git    = simpleGit(resolved);
+    const status = await git.status();
+    const branch = status.current;
+
+    if (status.ahead === 0) {
+      return res.json({ ok: true, message: 'Nothing to push' });
+    }
+
+    await withGitCredentials(token, resolved, (credGit) =>
+      credGit.timeout({ block: 30000 }).push('origin', branch)
+    );
+    res.json({ ok: true, branch, pushed: status.ahead });
+  } catch (err) {
+    console.error('[repos] push error:', err);
     res.status(500).json({ error: err.message });
   }
 });

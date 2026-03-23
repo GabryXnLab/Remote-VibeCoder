@@ -72,7 +72,8 @@ Claude Code CLI (or shell)
 | POST | `/api/repos/pull` | Pull latest |
 | GET | `/api/repos/:name/tree` | Browse directory tree |
 | GET | `/api/repos/:name/git-status` | Branch, tracking, ahead/behind, changed files |
-| POST | `/api/repos/:name/commit` | Stage, commit, optionally push |
+| POST | `/api/repos/:name/commit` | Stage, commit, optionally push (207 on push failure) |
+| POST | `/api/repos/:name/push` | Push local commits to remote |
 | DELETE | `/api/repos/:name` | Delete local clone |
 | GET | `/api/sessions` | List active tmux sessions |
 | GET | `/api/sessions/:repo` | Check session exists |

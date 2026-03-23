@@ -77,11 +77,11 @@ jobs:
             echo "── Installing server dependencies ──"
             cd ~/claude-mobile/server && npm install --omit=dev
 
-            echo "── Installing frontend dependencies ──"
-            cd ~/claude-mobile/client-src && npm install
+            echo "── Installing frontend dependencies (including devDeps for build) ──"
+            cd ~/claude-mobile/client-src && npm install --include=dev
 
             echo "── Building frontend (Vite → dist/) ──"
-            cd ~/claude-mobile/client-src && npm run build
+            cd ~/claude-mobile/client-src && npx vite build
 
             if [ "${SERVICE_CHANGED:-false}" = "true" ]; then
               echo "── Updating systemd unit ──"
