@@ -4,20 +4,18 @@ import {
   Button, Badge, Spinner, Header, Section,
   Modal, Textarea, Alert, Checkbox,
   ConflictWarningDialog, type ConflictContext,
+  ToastContainer,
 } from '@/components'
+import { useToast }    from '@/hooks/useToast'
+import {
+  listRepos, pullRepo, forcePullRepo, pushRepo,
+  getSyncStatus, getGitStatus, commitRepo as doCommit, cloneRepo,
+  type Repo, type GitStatus, type SyncStatus,
+} from '@/services/repoService'
 import { colors } from '@/styles/tokens'
 import styles from './ProjectsPage.module.css'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Repo {
-  name:        string
-  description: string | null
-  private:     boolean
-  archived:    boolean
-  cloned:      boolean
-  updatedAt:   string
-}
+// ─── Local types ──────────────────────────────────────────────────────────────
 
 interface Session {
   sessionId: string
@@ -27,33 +25,6 @@ interface Session {
   workdir:   string
   created:   number
   windows:   number
-}
-
-interface GitFile {
-  path:        string
-  from?:       string
-  index:       string
-  working_dir: string
-}
-
-interface GitStatus {
-  branch:      string
-  ahead:       number
-  behind:      number
-  tracking:    string | null
-  authorName:  string
-  authorEmail: string
-  files:       GitFile[]
-}
-
-interface SyncStatus {
-  synced:       boolean
-  localChanges: boolean
-  ahead:        number
-  behind:       number
-  branch:       string
-  tracking:     string | null
-  files:        GitFile[]
 }
 
 type SyncState = 'loading' | 'synced' | 'local-changes' | 'ahead' | 'behind' | 'diverged' | 'unknown'
@@ -76,10 +47,12 @@ function formatTime(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
-function fileStatusInfo(f: GitFile): { label: string; colors: { bg: string; text: string } } {
+type FileStatusKey = keyof typeof colors.fileStatus
+
+function fileStatusInfo(f: { index: string; working_dir: string }): { label: string; colors: { bg: string; text: string } } {
   const idx = f.index
   const wd  = f.working_dir
-  let key: keyof typeof colors.fileStatus = 'M'
+  let key: FileStatusKey = 'M'
   if (idx === '?' && wd === '?') key = 'Q'
   else if (idx === 'A')               key = 'A'
   else if (idx === 'D' || wd === 'D') key = 'D'
@@ -99,30 +72,30 @@ function computeSyncState(ss: SyncStatus): SyncState {
 }
 
 const SYNC_DISPLAY: Record<SyncState, { label: string; color: string }> = {
-  'loading':       { label: '...',               color: 'var(--text-dim)' },
-  'synced':        { label: 'Synced',            color: '#4caf50' },
-  'local-changes': { label: 'Local changes',     color: '#e8d44d' },
-  'ahead':         { label: 'Push pending',      color: '#e8d44d' },
-  'behind':        { label: 'Updates available',  color: '#5db8e8' },
-  'diverged':      { label: 'Diverged',          color: '#e8a85d' },
-  'unknown':       { label: 'Unknown',           color: 'var(--text-dim)' },
+  'loading':       { label: '...',              color: 'var(--text-dim)' },
+  'synced':        { label: 'Synced',           color: '#4caf50' },
+  'local-changes': { label: 'Local changes',    color: '#e8d44d' },
+  'ahead':         { label: 'Push pending',     color: '#e8d44d' },
+  'behind':        { label: 'Updates available', color: '#5db8e8' },
+  'diverged':      { label: 'Diverged',         color: '#e8a85d' },
+  'unknown':       { label: 'Unknown',          color: 'var(--text-dim)' },
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ProjectsPage() {
   const navigate = useNavigate()
+  const { toasts, toast } = useToast()
 
   const [repos,    setRepos]    = useState<RepoWithSync[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading,  setLoading]  = useState(true)
-  const [error,    setError]    = useState('')
 
   // Commit modal
-  const [commitOpen,   setCommitOpen]   = useState(false)
-  const [commitRepo,   setCommitRepo]   = useState('')
-  const [commitStatus, setCommitStatus] = useState<GitStatus | null>(null)
-  const [commitMsg,    setCommitMsg]    = useState('')
+  const [commitOpen,        setCommitOpen]        = useState(false)
+  const [commitRepo,        setCommitRepo]        = useState('')
+  const [commitStatus,      setCommitStatus]      = useState<GitStatus | null>(null)
+  const [commitMsg,         setCommitMsg]         = useState('')
   const [commitAuthorName,  setCommitAuthorName]  = useState('')
   const [commitAuthorEmail, setCommitAuthorEmail] = useState('')
   const [commitPush,        setCommitPush]        = useState(true)
@@ -133,18 +106,18 @@ export function ProjectsPage() {
 
   // Conflict dialog
   const [conflictOpen,    setConflictOpen]    = useState(false)
-  const [conflictContext,  setConflictContext]  = useState<ConflictContext | null>(null)
+  const [conflictContext, setConflictContext] = useState<ConflictContext | null>(null)
   const [conflictLoading, setConflictLoading] = useState(false)
 
-  // Post-commit auto-pull tracking
+  // Post-commit auto-pull
   const [pendingPullRepo, setPendingPullRepo] = useState<string | null>(null)
 
   // Sync polling
-  const reposRef = useRef<RepoWithSync[]>([])
-  reposRef.current = repos
+  const reposRef    = useRef<RepoWithSync[]>([])
+  reposRef.current  = repos
   const syncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ── Auth guard ──────────────────────────────────────────────────────────────
+  // ── Auth guard ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     fetch('/api/auth/me')
@@ -155,250 +128,217 @@ export function ProjectsPage() {
       .catch(() => navigate('/', { replace: true }))
   }, [navigate])
 
-  // ── Data loading ────────────────────────────────────────────────────────────
+  // ── Data loading ─────────────────────────────────────────────────────────────
 
   const loadAll = useCallback(async () => {
     setLoading(true)
-    setError('')
     try {
       const [reposRes, sessionsRes] = await Promise.all([
-        fetch('/api/repos'),
-        fetch('/api/sessions'),
+        listRepos(),
+        fetch('/api/sessions').then(r => r.json()).catch(() => ({ sessions: [] })),
       ])
-      if (!reposRes.ok) throw new Error(`Failed to load repos: ${reposRes.status}`)
-      const { repos: rawRepos } = await reposRes.json() as { repos: Repo[] }
-      const { sessions: rawSessions } = sessionsRes.ok
-        ? await sessionsRes.json() as { sessions: Session[] }
-        : { sessions: [] as Session[] }
+
+      if (!reposRes.ok) {
+        toast.error('Impossibile caricare i repository', { detail: reposRes.error.message })
+        setLoading(false)
+        return
+      }
+
+      const rawRepos    = reposRes.data.repos
+      const rawSessions = (sessionsRes as { sessions: Session[] }).sessions ?? []
 
       setSessions(rawSessions)
       setRepos(rawRepos)
 
-      // Non-blocking enrichment
       const reposWithSession = new Set(rawSessions.filter(s => s.repo).map(s => s.repo!))
       loadGitStatuses(rawRepos, reposWithSession)
       loadSyncStatuses(rawRepos)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadAll() }, [loadAll])
 
-  // ── Git status enrichment (for commit file counts) ──────────────────────────
+  // ── Git status enrichment ────────────────────────────────────────────────────
 
   async function loadGitStatuses(rawRepos: Repo[], reposWithSession: Set<string>) {
-    const candidates = rawRepos.filter(
-      r => r.cloned && !r.archived && !reposWithSession.has(r.name)
-    )
+    const candidates = rawRepos.filter(r => r.cloned && !r.archived && !reposWithSession.has(r.name))
     await Promise.all(candidates.map(async (repo) => {
-      try {
-        const res = await fetch(`/api/repos/${encodeURIComponent(repo.name)}/git-status`)
-        if (!res.ok) return
-        const status = await res.json() as GitStatus
-        if (!status.files || status.files.length === 0) return
-        setRepos(prev =>
-          prev.map(r => r.name === repo.name ? { ...r, gitStatus: status } : r)
-        )
-      } catch { /* non-critical */ }
+      const res = await getGitStatus(repo.name)
+      if (!res.ok || !res.data.files.length) return
+      setRepos(prev => prev.map(r => r.name === repo.name ? { ...r, gitStatus: res.data } : r))
     }))
   }
 
-  // ── Sync status polling ─────────────────────────────────────────────────────
+  // ── Sync status polling ──────────────────────────────────────────────────────
 
   async function loadSyncStatuses(rawRepos: Repo[]) {
     const cloned = rawRepos.filter(r => r.cloned && !r.archived)
-    if (cloned.length === 0) return
+    if (!cloned.length) return
 
-    // Mark all as loading
     setRepos(prev => prev.map(r =>
       r.cloned && !r.archived ? { ...r, syncState: 'loading' as SyncState } : r
     ))
 
-    // Sequential with small delay to not overload the VM
     for (const repo of cloned) {
-      try {
-        const res = await fetch(`/api/repos/${encodeURIComponent(repo.name)}/sync-status`)
-        if (!res.ok) {
-          setRepos(prev => prev.map(r =>
-            r.name === repo.name ? { ...r, syncState: 'unknown' as SyncState } : r
-          ))
-          continue
-        }
-        const ss = await res.json() as SyncStatus
-        const state = computeSyncState(ss)
+      const res = await getSyncStatus(repo.name)
+      if (!res.ok) {
+        setRepos(prev => prev.map(r => r.name === repo.name ? { ...r, syncState: 'unknown' } : r))
+      } else {
+        const state = computeSyncState(res.data)
         setRepos(prev => prev.map(r =>
-          r.name === repo.name ? { ...r, syncStatus: ss, syncState: state } : r
-        ))
-      } catch {
-        setRepos(prev => prev.map(r =>
-          r.name === repo.name ? { ...r, syncState: 'unknown' as SyncState } : r
+          r.name === repo.name ? { ...r, syncStatus: res.data, syncState: state } : r
         ))
       }
-      // 200ms pause between repos
       await new Promise(resolve => setTimeout(resolve, 200))
     }
   }
 
-  // Polling every 60s
   useEffect(() => {
-    syncTimerRef.current = setInterval(() => {
-      loadSyncStatuses(reposRef.current)
-    }, 60000)
-    return () => {
-      if (syncTimerRef.current) clearInterval(syncTimerRef.current)
-    }
+    syncTimerRef.current = setInterval(() => loadSyncStatuses(reposRef.current), 60_000)
+    return () => { if (syncTimerRef.current) clearInterval(syncTimerRef.current) }
   }, [])
 
-  // ── Actions ─────────────────────────────────────────────────────────────────
+  // ── Actions ──────────────────────────────────────────────────────────────────
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => { /* noop */ })
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     navigate('/', { replace: true })
   }
 
   async function handleClone(repo: string, btn: HTMLButtonElement) {
     const orig = btn.textContent ?? ''
-    btn.disabled = true
-    btn.textContent = 'Cloning…'
-    try {
-      const res = await fetch('/api/repos/clone', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: repo }),
-      })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string }
-        throw new Error(d.error ?? `Clone failed (${res.status})`)
-      }
+    btn.disabled = true; btn.textContent = 'Cloning…'
+    const res = await cloneRepo(repo)
+    if (res.ok) {
+      toast.success(`${repo} clonato con successo`)
       await loadAll()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Clone failed')
-      btn.disabled = false
-      btn.textContent = orig
+    } else {
+      toast.error('Clone fallito', { detail: res.error.message })
+      btn.disabled = false; btn.textContent = orig
     }
   }
 
-  // ── Pre-check pull ──────────────────────────────────────────────────────────
+  // ── Pull (with conflict pre-check) ───────────────────────────────────────────
 
   async function handlePull(repo: string, btn: HTMLButtonElement) {
     const orig = btn.textContent ?? ''
-    btn.disabled = true
-    btn.textContent = '...'
-    try {
-      // Step 1: check sync status
-      const checkRes = await fetch(`/api/repos/${encodeURIComponent(repo)}/sync-status`)
-      if (!checkRes.ok) throw new Error('Failed to check sync status')
-      const ss = await checkRes.json() as SyncStatus
+    btn.disabled = true; btn.textContent = '...'
 
-      // Step 2: if local changes exist, show conflict dialog
-      if (ss.localChanges || ss.ahead > 0) {
-        setConflictContext({
-          repoName: repo,
-          branch:   ss.branch,
-          ahead:    ss.ahead,
-          behind:   ss.behind,
-          files:    ss.files,
-        })
+    try {
+      // Pre-check: see if there are local changes or diverged state
+      const checkRes = await getSyncStatus(repo)
+      if (!checkRes.ok) {
+        toast.error('Impossibile verificare lo stato di sync', { detail: checkRes.error.message })
+        btn.disabled = false; btn.textContent = orig
+        return
+      }
+      const ss = checkRes.data
+
+      // Show conflict dialog only for: uncommitted changes OR truly diverged (ahead+behind)
+      if (ss.localChanges || (ss.ahead > 0 && ss.behind > 0)) {
+        setConflictContext({ repoName: repo, branch: ss.branch, ahead: ss.ahead, behind: ss.behind, files: ss.files })
         setConflictOpen(true)
-        btn.disabled = false
-        btn.textContent = orig
+        btn.disabled = false; btn.textContent = orig
         return
       }
 
-      // Step 3: clean state — pull directly
-      const res = await fetch('/api/repos/pull', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: repo }),
-      })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string }
-        throw new Error(d.error ?? `Pull failed (${res.status})`)
+      // Clean state or only ahead — proceed with pull
+      const pullRes = await pullRepo(repo)
+      if (!pullRes.ok) {
+        toast.error(`Pull di ${repo} fallito`, { detail: pullRes.error.message })
+        btn.disabled = false; btn.textContent = orig
+        return
       }
+
+      const summary = pullRes.data?.summary
+      const detail  = summary && summary.changes > 0
+        ? `${summary.changes} file modificat${summary.changes !== 1 ? 'i' : 'o'}`
+        : 'Già aggiornato'
+      toast.success(`Pull ${repo} completato`, { detail })
       btn.textContent = '✓'
       setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
       await loadAll()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Pull failed')
-      btn.disabled = false
-      btn.textContent = orig
+    } catch {
+      btn.disabled = false; btn.textContent = orig
     }
   }
 
-  // Conflict dialog handlers
+  // ── Conflict dialog handlers ─────────────────────────────────────────────────
 
   async function handleForceOverwrite() {
     if (!conflictContext) return
     setConflictLoading(true)
-    try {
-      const res = await fetch('/api/repos/force-pull', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: conflictContext.repoName }),
-      })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string }
-        throw new Error(d.error ?? 'Force pull failed')
-      }
-      setConflictOpen(false)
-      setConflictContext(null)
-      await loadAll()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Force pull failed')
-    } finally {
-      setConflictLoading(false)
+    const res = await forcePullRepo(conflictContext.repoName)
+    setConflictLoading(false)
+    if (!res.ok) {
+      toast.error('Overwrite fallito', { detail: res.error.message })
+      return
     }
+    toast.success(`${conflictContext.repoName} sovrascritto`, {
+      detail: 'Tutte le modifiche locali sono state scartate.',
+    })
+    setConflictOpen(false)
+    setConflictContext(null)
+    await loadAll()
   }
 
   async function handleCommitFirst() {
     if (!conflictContext) return
-    const repo = conflictContext.repoName
+    const repo   = conflictContext.repoName
     const behind = conflictContext.behind
     setConflictOpen(false)
     setPendingPullRepo(repo)
 
-    // Load full git-status and open commit modal
-    try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/git-status`)
-      if (!res.ok) throw new Error('Failed to load git status')
-      const status = await res.json() as GitStatus
-      openCommitModal(repo, status, behind)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load status')
+    const res = await getGitStatus(repo)
+    if (!res.ok) {
+      toast.error('Impossibile caricare lo stato git', { detail: res.error.message })
       setPendingPullRepo(null)
+      return
     }
+    if (!res.data.files.length) {
+      toast.info('Nessuna modifica da committare')
+      setPendingPullRepo(null)
+      return
+    }
+    openCommitModal(repo, res.data, behind)
   }
+
+  // ── Push ─────────────────────────────────────────────────────────────────────
 
   async function handlePush(repo: string, btn: HTMLButtonElement) {
     const orig = btn.textContent ?? ''
-    btn.disabled = true
-    btn.textContent = '...'
-    try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/push`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+    btn.disabled = true; btn.textContent = '...'
+    const res = await pushRepo(repo)
+    if (!res.ok) {
+      toast.error(`Push di ${repo} fallito`, {
+        detail:   res.error.message,
+        duration: 0,
+        ...(res.error.kind === 'rejected' ? {
+          action: { label: 'Fai Pull prima', onClick: () => handlePull(repo, btn) }
+        } : {}),
       })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string }
-        throw new Error(d.error ?? `Push failed (${res.status})`)
-      }
-      btn.textContent = '✓'
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
-      await loadAll()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Push failed')
-      btn.disabled = false
-      btn.textContent = orig
+      btn.disabled = false; btn.textContent = orig
+      return
     }
+
+    const data = res.data as { message?: string; pushed?: number; branch?: string }
+    if (data.message) {
+      toast.info(`${repo}: ${data.message}`)
+    } else {
+      toast.success(`Push ${repo} completato`, {
+        detail: `${data.pushed ?? 0} commit su ${data.branch ?? 'origin'}`,
+      })
+    }
+    btn.textContent = '✓'
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
+    await loadAll()
   }
 
   async function handleOpen(repo: string, btn: HTMLButtonElement, shell = false) {
     const orig = btn.textContent ?? ''
-    btn.disabled = true
-    btn.textContent = 'Starting…'
+    btn.disabled = true; btn.textContent = 'Starting…'
     try {
       const res = await fetch('/api/sessions', {
         method:  'POST',
@@ -412,24 +352,24 @@ export function ProjectsPage() {
       const { sessionId } = await res.json() as { sessionId: string }
       navigate(`/terminal?session=${encodeURIComponent(sessionId)}`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start')
-      btn.disabled = false
-      btn.textContent = orig
+      toast.error('Impossibile avviare la sessione', { detail: err instanceof Error ? err.message : String(err) })
+      btn.disabled = false; btn.textContent = orig
     }
   }
 
   async function handleKillSession(sessionId: string) {
-    if (!confirm(`Kill session ${sessionId}? Claude Code will stop.`)) return
+    if (!confirm(`Kill session ${sessionId}? Claude Code si fermerà.`)) return
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('Failed to kill session')
+      toast.success('Sessione terminata')
       await loadAll()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Kill failed')
+      toast.error('Impossibile terminare la sessione', { detail: err instanceof Error ? err.message : String(err) })
     }
   }
 
-  // ── Commit modal ─────────────────────────────────────────────────────────────
+  // ── Commit modal ──────────────────────────────────────────────────────────────
 
   function openCommitModal(repo: string, gitStatus: GitStatus, behind = 0) {
     setCommitRepo(repo)
@@ -445,115 +385,88 @@ export function ProjectsPage() {
   }
 
   async function openCommitModalForRepo(repo: string, knownBehind = 0) {
-    try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(repo)}/git-status`)
-      if (!res.ok) throw new Error('Failed to load git status')
-      const status = await res.json() as GitStatus
-      if (status.files.length === 0) {
-        setError('No changes to commit')
-        return
-      }
-      openCommitModal(repo, status, knownBehind)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load status')
-    }
+    const res = await getGitStatus(repo)
+    if (!res.ok) { toast.error('Impossibile caricare lo stato git', { detail: res.error.message }); return }
+    if (!res.data.files.length) { toast.info('Nessuna modifica da committare'); return }
+    openCommitModal(repo, res.data, knownBehind)
   }
 
   function closeCommitModal() {
-    setCommitOpen(false)
-    setCommitRepo('')
-    setCommitStatus(null)
-    setCommitBehind(0)
+    setCommitOpen(false); setCommitRepo(''); setCommitStatus(null); setCommitBehind(0)
   }
 
   function toggleAllFiles() {
     if (!commitStatus) return
-    const allPaths = commitStatus.files.map(f => f.path)
-    setSelectedFiles(prev =>
-      prev.length === allPaths.length ? [] : allPaths
-    )
+    const all = commitStatus.files.map(f => f.path)
+    setSelectedFiles(prev => prev.length === all.length ? [] : all)
   }
 
-  function toggleFile(path: string) {
-    setSelectedFiles(prev =>
-      prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]
-    )
+  function toggleFile(p: string) {
+    setSelectedFiles(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
   }
 
   async function submitCommit() {
     if (!commitRepo) return
-    if (selectedFiles.length === 0) { setCommitError('Select at least one file to commit.'); return }
-    if (!commitMsg.trim()) { setCommitError('Commit message is required.'); return }
+    if (!selectedFiles.length) { setCommitError('Seleziona almeno un file da committare.'); return }
+    if (!commitMsg.trim())     { setCommitError('Il messaggio di commit è obbligatorio.'); return }
 
-    setCommitError('')
-    setCommitLoading(true)
+    setCommitError(''); setCommitLoading(true)
 
-    try {
-      const res = await fetch(`/api/repos/${encodeURIComponent(commitRepo)}/commit`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          message:     commitMsg.trim(),
-          files:       selectedFiles,
-          authorName:  commitAuthorName  || undefined,
-          authorEmail: commitAuthorEmail || undefined,
-          push:        commitPush,
-        }),
+    const res = await doCommit(commitRepo, {
+      message:     commitMsg.trim(),
+      files:       selectedFiles,
+      authorName:  commitAuthorName  || undefined,
+      authorEmail: commitAuthorEmail || undefined,
+      push:        commitPush,
+    })
+
+    setCommitLoading(false)
+    if (!res.ok) { setCommitError(res.error.message); return }
+
+    closeCommitModal()
+
+    if (!res.data.pushed && commitPush) {
+      toast.warning('Commit eseguito, push fallito', {
+        detail:   res.data.pushError ?? 'Errore sconosciuto',
+        duration: 0,
+        action:   { label: 'Push ora', onClick: () => {
+          const dummy = document.createElement('button')
+          handlePush(commitRepo, dummy)
+        }},
       })
-      const data = await res.json().catch(() => ({})) as { error?: string; pushed?: boolean; pushError?: string }
-      if (!res.ok && res.status !== 207) throw new Error(data.error ?? `Commit failed (${res.status})`)
-
-      const pushFailed = res.status === 207 && data.pushed === false
-
-      closeCommitModal()
-
-      if (pushFailed) {
-        setError(`Commit completato, ma il push è fallito: ${data.pushError ?? 'errore sconosciuto'}. Puoi riprovare con il pulsante Push.`)
-      }
-
-      // Optimistically mark repo sync state while loadAll runs
-      const newSyncState: SyncState = (commitPush && !pushFailed) ? 'synced' : 'ahead'
-      setRepos(prev => prev.map(r =>
-        r.name === commitRepo
-          ? { ...r, gitStatus: undefined, syncState: newSyncState }
-          : r
-      ))
-
-      // If this commit was triggered from conflict dialog, auto-pull after
-      if (pendingPullRepo === commitRepo) {
-        setPendingPullRepo(null)
-        try {
-          const pullRes = await fetch('/api/repos/pull', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ name: commitRepo }),
-          })
-          if (!pullRes.ok) {
-            const pd = await pullRes.json().catch(() => ({})) as { error?: string }
-            setError(pd.error ?? 'Auto-pull after commit failed')
-          }
-        } catch (pullErr) {
-          setError(pullErr instanceof Error ? pullErr.message : 'Auto-pull failed')
-        }
-      }
-
-      await loadAll()
-    } catch (err) {
-      setCommitError(err instanceof Error ? err.message : 'Commit failed')
-    } finally {
-      setCommitLoading(false)
+    } else if (commitPush && res.data.pushed) {
+      toast.success(`Commit & push ${commitRepo}`, { detail: res.data.commit })
+    } else {
+      toast.success(`Commit ${commitRepo}`, { detail: res.data.commit })
     }
+
+    setRepos(prev => prev.map(r =>
+      r.name === commitRepo
+        ? { ...r, gitStatus: undefined, syncState: (commitPush && res.data.pushed) ? 'synced' : 'ahead' }
+        : r
+    ))
+
+    // Auto-pull if triggered from conflict dialog
+    if (pendingPullRepo === commitRepo) {
+      setPendingPullRepo(null)
+      const pullRes = await pullRepo(commitRepo)
+      if (!pullRes.ok) {
+        toast.error('Auto-pull dopo commit fallito', { detail: pullRes.error.message })
+      } else {
+        toast.success(`Pull ${commitRepo} completato`)
+      }
+    }
+
+    await loadAll()
   }
 
-  // ── Active sessions ──────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────
 
   const reposWithSession = new Set(sessions.filter(s => s.repo).map(s => s.repo!))
 
-  // ── Sync indicator renderer ────────────────────────────────────────────────
-
   const renderSyncIndicator = (repo: RepoWithSync) => {
     if (!repo.cloned || repo.archived) return null
-    const state = repo.syncState || 'unknown'
+    const state   = repo.syncState || 'unknown'
     const display = SYNC_DISPLAY[state]
     return (
       <span className={styles.syncIndicator}>
@@ -563,15 +476,12 @@ export function ProjectsPage() {
     )
   }
 
-  // ── Render helpers ───────────────────────────────────────────────────────────
-
   const repoActions = (repo: RepoWithSync) => {
     const hasSession  = reposWithSession.has(repo.name)
     const repoSession = sessions.find(s => s.repo === repo.name)
 
-    if (repo.archived) {
-      return <span className={styles.archivedNotice}>Archived — read only</span>
-    }
+    if (repo.archived) return <span className={styles.archivedNotice}>Archived — read only</span>
+
     if (repo.cloned) {
       if (hasSession && repoSession) {
         return (
@@ -581,35 +491,32 @@ export function ProjectsPage() {
         )
       }
       const changeCount = repo.gitStatus?.files.length ?? repo.syncStatus?.files.length ?? 0
-      const aheadCount  = repo.syncStatus?.ahead ?? 0
+      const aheadCount  = repo.syncStatus?.ahead ?? repo.gitStatus?.ahead ?? 0
       return (
         <div className={styles.actionRow}>
           <Button variant="primary" size="sm"
             onClick={e => handleOpen(repo.name, e.currentTarget as HTMLButtonElement, true)}
           >Open</Button>
           <Button variant="secondary" size="sm"
-            title="git pull (with conflict check)"
+            title="git pull (con controllo conflitti)"
             onClick={e => handlePull(repo.name, e.currentTarget as HTMLButtonElement)}
           >↓ Pull</Button>
           {aheadCount > 0 && changeCount === 0 && (
-            <Button
-              variant="git"
-              size="sm"
+            <Button variant="git" size="sm"
               title={`${aheadCount} commit${aheadCount !== 1 ? 's' : ''} da pushare`}
               onClick={e => handlePush(repo.name, e.currentTarget as HTMLButtonElement)}
             >↑ Push {aheadCount}</Button>
           )}
           {changeCount > 0 && (
-            <Button
-              variant="git"
-              size="sm"
-              title={`${changeCount} uncommitted change${changeCount !== 1 ? 's' : ''} — click to commit`}
+            <Button variant="git" size="sm"
+              title={`${changeCount} modifica${changeCount !== 1 ? 'he' : ''} non committate`}
               onClick={() => openCommitModalForRepo(repo.name, repo.syncStatus?.behind ?? 0)}
             >↑ {changeCount}</Button>
           )}
         </div>
       )
     }
+
     return (
       <Button variant="secondary" size="sm"
         onClick={e => handleClone(repo.name, e.currentTarget as HTMLButtonElement)}
@@ -617,24 +524,18 @@ export function ProjectsPage() {
     )
   }
 
-  // ── JSX ─────────────────────────────────────────────────────────────────────
-
   return (
     <div className={styles.page}>
       <Header variant="default">
         <div className={styles.logo}>⌘ <span>Remote</span>VibeCoder</div>
         <div className={styles.actions}>
-          <Button variant="secondary" size="sm" onClick={loadAll} title="Refresh repos">↺</Button>
+          <Button variant="secondary" size="sm" onClick={loadAll} title="Aggiorna">↺</Button>
           <Button variant="secondary" size="sm" onClick={logout}>Logout</Button>
         </div>
       </Header>
 
       <main className={styles.content}>
-        {loading && <Spinner size="md" label="Loading repositories…" style={{ padding: '40px' }} />}
-
-        {error && !loading && (
-          <Alert variant="error" style={{ margin: '16px 0' }}>⚠ {error}</Alert>
-        )}
+        {loading && <Spinner size="md" label="Caricamento repository…" style={{ padding: '40px' }} />}
 
         {!loading && sessions.length > 0 && (
           <Section title="Active Sessions" style={{ marginBottom: '24px' }}>
@@ -661,9 +562,9 @@ export function ProjectsPage() {
           </Section>
         )}
 
-        {!loading && repos.length === 0 && !error && (
+        {!loading && repos.length === 0 && (
           <p style={{ color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center', marginTop: '16px' }}>
-            No repositories found.
+            Nessun repository trovato.
           </p>
         )}
 
@@ -671,20 +572,15 @@ export function ProjectsPage() {
           <Section title="GitHub Repositories">
             <div className={styles.repoList}>
               {repos.map(repo => (
-                <div
-                  key={repo.name}
-                  className={[
-                    styles.repoCard,
-                    repo.cloned   ? styles.cloned   : '',
-                    repo.archived ? styles.archived  : '',
-                  ].filter(Boolean).join(' ')}
-                >
+                <div key={repo.name} className={[
+                  styles.repoCard,
+                  repo.cloned   ? styles.cloned   : '',
+                  repo.archived ? styles.archived  : '',
+                ].filter(Boolean).join(' ')}>
                   <div className={styles.repoInfo}>
                     <div className={styles.repoHeader}>
                       <div className={styles.repoName}>
-                        <span className={styles.visibilityIcon}>
-                          {repo.private ? '🔒' : '🔓'}
-                        </span>
+                        <span className={styles.visibilityIcon}>{repo.private ? '🔒' : '🔓'}</span>
                         {repo.name}
                         <Badge variant={repo.private ? 'private' : 'public'}>
                           {repo.private ? 'Private' : 'Public'}
@@ -693,12 +589,8 @@ export function ProjectsPage() {
                       </div>
                       {renderSyncIndicator(repo)}
                     </div>
-                    {repo.description && (
-                      <div className={styles.repoDesc}>{repo.description}</div>
-                    )}
-                    <div className={styles.repoMeta}>
-                      <span>{formatDate(repo.updatedAt)}</span>
-                    </div>
+                    {repo.description && <div className={styles.repoDesc}>{repo.description}</div>}
+                    <div className={styles.repoMeta}><span>{formatDate(repo.updatedAt)}</span></div>
                   </div>
                   <div className={styles.repoActions}>{repoActions(repo)}</div>
                 </div>
@@ -708,7 +600,7 @@ export function ProjectsPage() {
         )}
       </main>
 
-      {/* ── Conflict warning dialog ── */}
+      {/* ── Conflict dialog ── */}
       <ConflictWarningDialog
         open={conflictOpen}
         context={conflictContext}
@@ -728,7 +620,7 @@ export function ProjectsPage() {
           <div>
             {commitError && <Alert variant="error" small>{commitError}</Alert>}
             <div className={styles.modalActions}>
-              <Button variant="secondary" onClick={closeCommitModal}>Cancel</Button>
+              <Button variant="secondary" onClick={closeCommitModal}>Annulla</Button>
               <Button variant="primary" loading={commitLoading} onClick={submitCommit}>
                 {commitPush ? 'Commit & Push' : 'Commit'}
               </Button>
@@ -738,14 +630,11 @@ export function ProjectsPage() {
       >
         {commitStatus && (
           <>
-            {/* Warning: remote has new commits, push will likely be rejected */}
             {commitBehind > 0 && commitPush && (
               <Alert variant="info" small style={{ marginBottom: 12 }}>
-                ⚠ Remote ha {commitBehind} commit più recenti. Il push potrebbe essere rifiutato — considera di fare prima un pull.
+                ⚠ Remote ha {commitBehind} commit più recenti. Il push potrebbe essere rifiutato.
               </Alert>
             )}
-
-            {/* Branch row */}
             <div className={styles.branchRow}>
               <span style={{ color: 'var(--text-dim)' }}>Branch:</span>
               <span className={styles.branchName}>{commitStatus.branch || 'unknown'}</span>
@@ -756,13 +645,11 @@ export function ProjectsPage() {
                 ].filter(Boolean).join(' ')}
               </span>
             </div>
-
-            {/* Files */}
             <div className={styles.commitSection}>
               <div className={styles.commitSectionHeader}>
-                <span>Files to commit</span>
+                <span>File da committare</span>
                 <button className={styles.toggleAllBtn} onClick={toggleAllFiles}>
-                  {selectedFiles.length === commitStatus.files.length ? 'Deselect all' : 'Select all'}
+                  {selectedFiles.length === commitStatus.files.length ? 'Deseleziona tutto' : 'Seleziona tutto'}
                 </button>
               </div>
               <div className={styles.filesList}>
@@ -776,10 +663,7 @@ export function ProjectsPage() {
                         onChange={() => toggleFile(f.path)}
                         style={{ accentColor: 'var(--accent-orange)', width: 14, height: 14, flexShrink: 0, cursor: 'pointer' }}
                       />
-                      <span
-                        className={styles.fileStatus}
-                        style={{ background: fc.bg, color: fc.text }}
-                      >{label}</span>
+                      <span className={styles.fileStatus} style={{ background: fc.bg, color: fc.text }}>{label}</span>
                       <span className={styles.filePath}>
                         {f.from && <span className={styles.fileFrom}>{f.from}</span>}
                         {f.path}
@@ -789,54 +673,39 @@ export function ProjectsPage() {
                 })}
               </div>
             </div>
-
-            {/* Commit message */}
             <div className={styles.commitSection}>
-              <label className={styles.commitLabel} htmlFor="cm-message">Commit message *</label>
+              <label className={styles.commitLabel} htmlFor="cm-message">Messaggio di commit *</label>
               <Textarea
                 id="cm-message"
                 value={commitMsg}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setCommitMsg(e.target.value)}
-                placeholder="feat: describe your changes"
+                placeholder="feat: descrivi le modifiche"
                 rows={3}
                 maxLength={500}
               />
             </div>
-
-            {/* Author collapsible */}
             <details className={styles.authorDetails}>
-              <summary className={styles.authorSummary}>Author info</summary>
+              <summary className={styles.authorSummary}>Info autore</summary>
               <div className={styles.authorFields}>
-                <input
-                  className={styles.authorInput}
-                  type="text"
-                  placeholder="Author name"
-                  value={commitAuthorName}
-                  onChange={e => setCommitAuthorName(e.target.value)}
-                  maxLength={100}
-                  autoComplete="name"
-                />
-                <input
-                  className={styles.authorInput}
-                  type="email"
-                  placeholder="author@example.com"
-                  value={commitAuthorEmail}
-                  onChange={e => setCommitAuthorEmail(e.target.value)}
-                  maxLength={200}
-                  autoComplete="email"
-                />
+                <input className={styles.authorInput} type="text" placeholder="Nome autore"
+                  value={commitAuthorName} onChange={e => setCommitAuthorName(e.target.value)}
+                  maxLength={100} autoComplete="name" />
+                <input className={styles.authorInput} type="email" placeholder="autore@esempio.com"
+                  value={commitAuthorEmail} onChange={e => setCommitAuthorEmail(e.target.value)}
+                  maxLength={200} autoComplete="email" />
               </div>
             </details>
-
-            {/* Push checkbox */}
             <Checkbox
               checked={commitPush}
               onChange={e => setCommitPush(e.target.checked)}
-              label="Push to remote after commit"
+              label="Push al remote dopo il commit"
             />
           </>
         )}
       </Modal>
+
+      {/* ── Toast notifications ── */}
+      <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
     </div>
   )
 }

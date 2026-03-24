@@ -1,0 +1,149 @@
+/* ─── Container ──────────────────────────────────────────────────────────────── */
+.container {
+  position:       fixed;
+  bottom:         calc(env(safe-area-inset-bottom, 0px) + 16px);
+  right:          16px;
+  left:           16px;
+  max-width:      420px;
+  margin:         0 auto;
+  display:        flex;
+  flex-direction: column;
+  gap:            8px;
+  z-index:        9999;
+  pointer-events: none;
+}
+
+/* ─── Card ───────────────────────────────────────────────────────────────────── */
+.card {
+  position:        relative;
+  border-radius:   8px;
+  border:          1px solid transparent;
+  overflow:        hidden;
+  pointer-events:  all;
+  box-shadow:      0 4px 16px rgba(0, 0, 0, 0.4);
+  animation:       slideIn 200ms ease-out;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)  scale(1); }
+}
+
+/* ─── Type variants ──────────────────────────────────────────────────────────── */
+.success {
+  background: #0d1f0d;
+  border-color: #22c55e44;
+}
+.success .icon    { color: #22c55e; }
+.success .progressBar { background: #22c55e; }
+
+.error {
+  background: #1f0d0d;
+  border-color: #ef444444;
+}
+.error .icon    { color: #ef4444; }
+.error .progressBar { background: #ef4444; }
+
+.warning {
+  background: #1f160d;
+  border-color: #f59e0b44;
+}
+.warning .icon    { color: #f59e0b; }
+.warning .progressBar { background: #f59e0b; }
+
+.info {
+  background: #0d1520;
+  border-color: #3b82f644;
+}
+.info .icon    { color: #60a5fa; }
+.info .progressBar { background: #3b82f6; }
+
+/* ─── Progress bar ───────────────────────────────────────────────────────────── */
+.progressBar {
+  position: absolute;
+  top:      0;
+  left:     0;
+  height:   2px;
+  transition: width 100ms linear;
+}
+
+/* ─── Body layout ────────────────────────────────────────────────────────────── */
+.body {
+  display:     flex;
+  align-items: flex-start;
+  gap:         10px;
+  padding:     12px 12px 12px 14px;
+}
+
+.icon {
+  font-size:   16px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top:  1px;
+}
+
+.content {
+  flex:        1;
+  display:     flex;
+  flex-direction: column;
+  gap:         3px;
+  min-width:   0;
+}
+
+.title {
+  font-size:   13px;
+  font-weight: 500;
+  color:       #e5e5e5;
+  line-height: 1.4;
+  word-break:  break-word;
+}
+
+.detail {
+  font-size:  11px;
+  color:      #999;
+  line-height: 1.4;
+  word-break: break-word;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+/* ─── Action button ──────────────────────────────────────────────────────────── */
+.actionBtn {
+  margin-top:    4px;
+  font-size:     11px;
+  font-weight:   600;
+  color:         #d97706;
+  background:    none;
+  border:        1px solid #d9770633;
+  border-radius: 4px;
+  padding:       2px 8px;
+  cursor:        pointer;
+  align-self:    flex-start;
+  transition:    background 150ms, border-color 150ms;
+}
+.actionBtn:hover {
+  background:   #d9770611;
+  border-color: #d97706;
+}
+
+/* ─── Close button ───────────────────────────────────────────────────────────── */
+.closeBtn {
+  flex-shrink:   0;
+  width:         20px;
+  height:        20px;
+  background:    none;
+  border:        none;
+  color:         #666;
+  font-size:     16px;
+  line-height:   1;
+  cursor:        pointer;
+  border-radius: 3px;
+  display:       flex;
+  align-items:   center;
+  justify-content: center;
+  transition:    color 150ms, background 150ms;
+  padding:       0;
+}
+.closeBtn:hover {
+  color:       #e5e5e5;
+  background:  #ffffff11;
+}

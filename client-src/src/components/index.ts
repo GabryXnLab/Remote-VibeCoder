@@ -55,3 +55,6 @@ export { TerminalWindow }   from './TerminalWindow/TerminalWindow'
 export type { WindowState } from './TerminalWindow/TerminalWindow'
 
 export { WindowManager }    from './WindowManager/WindowManager'
+
+export { ToastContainer }   from './Toast/Toast'
+export type { ToastContainerProps } from './Toast/Toast'

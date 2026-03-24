@@ -4,11 +4,10 @@ const express   = require('express');
 const fs        = require('fs');
 const fsp       = require('fs/promises');
 const path      = require('path');
-const os        = require('os');
-const crypto    = require('crypto');
 const { Octokit } = require('@octokit/rest');
 const simpleGit = require('simple-git');
 const config    = require('../config');
+const { withGitCredentials } = require('../lib/gitCredentials');
 
 const router    = express.Router();
 const REPOS_DIR = path.join(os.homedir(), 'repos');
@@ -35,31 +34,6 @@ function getGithubUser() {
 function ensureReposDir() {
   if (!fs.existsSync(REPOS_DIR)) {
     fs.mkdirSync(REPOS_DIR, { recursive: true });
-  }
-}
-
-async function withGitCredentials(token, cwd, fn) {
-  const tmpDir     = path.join(os.tmpdir(), `vc-cred-${crypto.randomBytes(8).toString('hex')}`);
-  const tokenFile  = path.join(tmpDir, 'token');
-  const helperFile = path.join(tmpDir, 'askpass.sh');
-
-  fs.mkdirSync(tmpDir, { mode: 0o700 });
-  fs.writeFileSync(tokenFile, token, { mode: 0o600 });
-  fs.writeFileSync(
-    helperFile,
-    `#!/bin/sh\ncase "$1" in *Username*) printf 'x-access-token';; *) cat "${tokenFile}";; esac\n`,
-    { mode: 0o700 }
-  );
-
-  try {
-    const git = simpleGit(cwd).env({
-      ...process.env,
-      GIT_ASKPASS:         helperFile,
-      GIT_TERMINAL_PROMPT: '0',
-    });
-    return await fn(git);
-  } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
   }
 }
 
@@ -168,14 +142,14 @@ router.post('/pull', async (req, res) => {
 
   try {
     const resolved = fs.realpathSync(repoPath);
-    if (!resolved.startsWith(REPOS_DIR)) {
+    if (resolved !== repoPath && !resolved.startsWith(REPOS_DIR + path.sep)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
 
     const cfg   = config.get();
     const token = cfg.githubPat || process.env.GITHUB_PAT;
 
-    const result = await withGitCredentials(token, repoPath, (git) =>
+    const result = await withGitCredentials(token, resolved, (git) =>
       git.timeout({ block: 30000 }).pull('origin')
     );
     res.json({ ok: true, result });
@@ -250,7 +224,7 @@ router.post('/force-pull', async (req, res) => {
 
   try {
     const resolved = fs.realpathSync(repoPath);
-    if (!resolved.startsWith(REPOS_DIR)) {
+    if (resolved !== repoPath && !resolved.startsWith(REPOS_DIR + path.sep)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
 
