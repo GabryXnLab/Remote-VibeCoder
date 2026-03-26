@@ -5,6 +5,7 @@ const path   = require('path');
 const os     = require('os');
 const crypto = require('crypto');
 const simpleGit = require('simple-git');
+const config    = require('../config');
 
 /**
  * Runs a git operation with temporary GIT_ASKPASS credentials.
@@ -16,23 +17,25 @@ const simpleGit = require('simple-git');
  * @param {Function} fn     Receives a configured simpleGit instance; must return a Promise
  * @returns {Promise<*>}    Whatever fn() resolves to
  */
-async function withGitCredentials(token, cwd, fn) {
+async function withGitCredentials(token, cwd, fn, timeoutMs = 30000) {
   if (!token) throw new Error('GitHub PAT non configurato — aggiorna ~/.claude-mobile/config.json');
 
   const tmpDir     = path.join(os.tmpdir(), `vc-cred-${crypto.randomBytes(8).toString('hex')}`);
   const tokenFile  = path.join(tmpDir, 'token');
   const helperFile = path.join(tmpDir, 'askpass.sh');
 
+  // Fine-grained PATs require the real GitHub username, not 'x-access-token'
+  const ghUser = config.get().githubUser || process.env.GITHUB_USER || 'x-access-token';
   fs.mkdirSync(tmpDir, { mode: 0o700 });
   fs.writeFileSync(tokenFile, token, { mode: 0o600 });
   fs.writeFileSync(
     helperFile,
-    `#!/bin/sh\ncase "$1" in *Username*) printf 'x-access-token';; *) cat "${tokenFile}";; esac\n`,
+    `#!/bin/sh\ncase "$1" in *Username*) printf '%s' '${ghUser}';; *) cat "${tokenFile}";; esac\n`,
     { mode: 0o700 }
   );
 
   try {
-    const git = simpleGit(cwd).env({
+    const git = simpleGit(cwd, { timeout: { block: timeoutMs } }).env({
       ...process.env,
       GIT_ASKPASS:         helperFile,
       GIT_TERMINAL_PROMPT: '0',

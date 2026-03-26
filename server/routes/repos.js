@@ -115,8 +115,8 @@ router.post('/clone', async (req, res) => {
     const cloneUrl = `https://github.com/${username}/${name}.git`;
 
     await withGitCredentials(token, REPOS_DIR, (git) =>
-      git.timeout({ block: 60000 }).clone(cloneUrl, destPath)
-    );
+      git.clone(cloneUrl, destPath)
+    , 60000);
 
     // Invalidate repos cache so the clone status updates immediately
     _reposCache = null;
@@ -150,7 +150,7 @@ router.post('/pull', async (req, res) => {
     const token = cfg.githubPat || process.env.GITHUB_PAT;
 
     const result = await withGitCredentials(token, resolved, (git) =>
-      git.timeout({ block: 30000 }).pull('origin')
+      git.pull('origin')
     );
     res.json({ ok: true, result });
   } catch (err) {
@@ -181,8 +181,8 @@ router.get('/:name/sync-status', async (req, res) => {
     const token = cfg.githubPat || process.env.GITHUB_PAT;
 
     await withGitCredentials(token, resolved, (git) =>
-      git.timeout({ block: 10000 }).fetch('origin', { '--prune': null })
-    ).catch(err => {
+      git.fetch('origin', { '--prune': null })
+    , 10000).catch(err => {
       console.warn('[repos] sync-status fetch warning:', err.message);
     });
 
@@ -238,7 +238,7 @@ router.post('/force-pull', async (req, res) => {
 
     // Fetch latest from remote (needs credentials, 30s timeout)
     await withGitCredentials(token, resolved, (credGit) =>
-      credGit.timeout({ block: 30000 }).fetch('origin')
+      credGit.fetch('origin')
     );
 
     // Hard-reset to remote state, discarding all local changes and commits
@@ -450,10 +450,18 @@ router.post('/:name/commit', async (req, res) => {
       try {
         const cfg    = config.get();
         const token  = cfg.githubPat || process.env.GITHUB_PAT;
+
+        // Strip any embedded credentials from the remote URL so GIT_ASKPASS is used.
+        try {
+          const rawUrl = (await git.raw(['remote', 'get-url', 'origin'])).trim();
+          const cleanUrl = rawUrl.replace(/^(https?:\/\/)[^@]*@/, '$1');
+          if (cleanUrl !== rawUrl) await git.remote(['set-url', 'origin', cleanUrl]);
+        } catch (_) {}
+
         const status = await git.status();
         const branch = status.current;
         await withGitCredentials(token, resolved, (credGit) =>
-          credGit.timeout({ block: 30000 }).push('origin', branch)
+          credGit.push('origin', branch)
         );
         res.json({ ok: true, commit: commitResult.commit, pushed: true });
       } catch (pushErr) {
@@ -496,6 +504,20 @@ router.post('/:name/push', async (req, res) => {
     const cfg    = config.get();
     const token  = cfg.githubPat || process.env.GITHUB_PAT;
     const git    = simpleGit(resolved);
+
+    // Strip any embedded credentials from the remote URL so GIT_ASKPASS is always used.
+    // Repos cloned with an old PAT embedded in the URL would otherwise bypass GIT_ASKPASS.
+    try {
+      const rawUrl = (await git.raw(['remote', 'get-url', 'origin'])).trim();
+      const cleanUrl = rawUrl.replace(/^(https?:\/\/)[^@]*@/, '$1');
+      if (cleanUrl !== rawUrl) {
+        await git.remote(['set-url', 'origin', cleanUrl]);
+        console.log(`[repos] stripped embedded credentials from ${name} remote URL`);
+      }
+    } catch (urlErr) {
+      console.warn('[repos] could not sanitize remote URL:', urlErr.message);
+    }
+
     const status = await git.status();
     const branch = status.current;
 
@@ -504,7 +526,7 @@ router.post('/:name/push', async (req, res) => {
     }
 
     await withGitCredentials(token, resolved, (credGit) =>
-      credGit.timeout({ block: 30000 }).push('origin', branch)
+      credGit.push('origin', branch)
     );
     res.json({ ok: true, branch, pushed: status.ahead });
   } catch (err) {
