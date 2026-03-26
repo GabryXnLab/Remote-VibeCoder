@@ -53,12 +53,31 @@ Claude Code CLI (or shell)
 - `server/config.js` — Reads `~/.claude-mobile/config.json` with hot-reload via `fs.watch()`
 - `server/resource-governor.js` — Adaptive resource management: reads `/proc/meminfo` + `/proc/loadavg`, classifies pressure (low/moderate/high/critical), triggers GC under pressure, tracks PTY connections, provides adaptive limits
 - `server/routes/auth.js` — PBKDF2-SHA512 (100k iterations) session auth; `crypto.timingSafeEqual()` to prevent timing attacks; 500ms delay on failure
-- `server/routes/repos.js` — GitHub API (Octokit), git clone/pull, directory tree, git status, commit+push, delete; PAT via GIT_ASKPASS temp file (never in `.git/config`); path traversal protection via `realpathSync()` + separator check; async I/O for dir listings; GitHub repo cache (2min TTL)
+- `server/routes/repos.js` — Thin router: validates input, calls lib modules, returns HTTP responses. ~130 lines.
+- `server/lib/githubClient.js` — Octokit factory + GitHub repo list cache (2-min TTL). Exports: `getOctokit`, `getGithubUser`, `listGithubRepos`, `invalidateReposCache`.
+- `server/lib/gitOps.js` — All `simple-git` operations (clone, pull, force-pull, push, commit, status, sync-status). No Express imports. PAT via `withGitCredentials`.
+- `server/lib/repoValidation.js` — Pure input validation functions: `validateRepoName`, `validateRepoPath`, `validateNestedPath`, `validateCommitParams`. No side effects.
 - `server/routes/sessions.js` — tmux session lifecycle (CRUD); shell command whitelist for `?shell=true`; subprocess caching (3s TTL), batched CWD lookups (max 5 concurrent), periodic stale metadata cleanup
 
 **Frontend:**
 - `client-src/` — React 18 + TypeScript + Vite. Compiles to `dist/`. Server serves `dist/` in production.
 - Legacy vanilla JS `client/` was removed from master (archived in branch `archive/legacy-vanilla-client`). **All frontend changes MUST go in `client-src/`.**
+
+### GitHub Module Architecture
+
+**Current structure (Approach B):** Thin router + `lib/` modules. Each module has one responsibility. Appropriate for a single-user app with ~10 endpoints.
+
+**Future Migration Path (Approach C):** If GitHub-related endpoints grow beyond ~15, or if the team needs to mock GitHub operations in isolation, migrate to a dedicated `server/github/` directory:
+
+```
+server/github/
+  index.js       (barrel export)
+  client.js      (renamed from lib/githubClient.js)
+  ops.js         (renamed from lib/gitOps.js)
+  validation.js  (renamed from lib/repoValidation.js)
+```
+
+Migration is a rename + barrel creation — no logic changes required.
 
 ## API Endpoints
 
