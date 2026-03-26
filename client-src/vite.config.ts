@@ -8,6 +8,7 @@ export default defineConfig({
     alias: { '@': resolve(__dirname, './src') },
   },
   build: {
+    target: 'es2020',
     minify: 'esbuild',
     sourcemap: false,
     outDir: '../dist',
