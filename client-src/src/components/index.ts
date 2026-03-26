@@ -45,6 +45,8 @@ export type { SettingsSection, SettingsDropdownProps } from './ui/SettingsDropdo
 
 export { FileBrowser }      from './FileBrowser/FileBrowser'
 
+export { CommitModal }      from './CommitModal/CommitModal'
+
 export { RepoSelector }     from './RepoSelector/RepoSelector'
 
 export { TerminalOpenMenu } from './TerminalOpenMenu/TerminalOpenMenu'

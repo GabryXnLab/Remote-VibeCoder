@@ -8,7 +8,7 @@ import {
 import { useToast }    from '@/hooks/useToast'
 import { useRepos }    from '@/hooks/useRepos'
 import { useCommit }   from '@/hooks/useCommit'
-import { CommitModal } from '@/components/CommitModal/CommitModal'
+import { CommitModal } from '@/components'
 import {
   cloneRepo, pullRepo, forcePullRepo, pushRepo, getSyncStatus,
 } from '@/services/repoService'
