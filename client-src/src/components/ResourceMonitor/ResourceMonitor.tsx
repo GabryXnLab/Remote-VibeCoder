@@ -53,10 +53,11 @@ export function ResourceMonitor({ metrics, compact = false }: ResourceMonitorPro
   const ramState = metricState(metrics.ram)
   const gpuState = metricState(metrics.gpu)
 
-  // Overall widget state: worst of the three
-  const states = [cpuState, ramState, gpuState]
-  const widgetState: 'ok' | 'warn' | 'critical' = states.includes('critical') ? 'critical'
-    : states.includes('warn') ? 'warn' : 'ok'
+  // Overall widget state: worst of cpu/ram (+ gpu only if present)
+  const activeStates: Array<'ok' | 'warn' | 'critical'> = [cpuState, ramState]
+  if (metrics.gpu !== null) activeStates.push(gpuState)
+  const widgetState: 'ok' | 'warn' | 'critical' = activeStates.includes('critical') ? 'critical'
+    : activeStates.includes('warn') ? 'warn' : 'ok'
 
   const isSuspended = metrics.status === 'critical' && !metrics.streamingPaused
   const isPaused    = metrics.streamingPaused
@@ -89,7 +90,9 @@ export function ResourceMonitor({ metrics, compact = false }: ResourceMonitorPro
       <div className={styles.metrics}>
         <MetricBar label="CPU" value={metrics.cpu} state={cpuState} />
         <MetricBar label="RAM" value={metrics.ram} state={ramState} />
-        <MetricBar label="GPU" value={metrics.gpu} state={gpuState} />
+        {metrics.gpu !== null && (
+          <MetricBar label="GPU" value={metrics.gpu} state={gpuState} />
+        )}
       </div>
 
       {isPaused && (
@@ -121,12 +124,12 @@ export function ResourceMonitor({ metrics, compact = false }: ResourceMonitorPro
                 : 'N/A'}
             </span>
           </div>
-          <div className={styles.drawerRow}>
-            <span className={styles.drawerKey}>GPU</span>
-            <span className={styles.drawerValue}>
-              {metrics.gpu !== null ? `${Math.round(metrics.gpu * 100)}%` : <span className={styles.naText}>N/A</span>}
-            </span>
-          </div>
+          {metrics.gpu !== null && (
+            <div className={styles.drawerRow}>
+              <span className={styles.drawerKey}>GPU</span>
+              <span className={styles.drawerValue}>{Math.round(metrics.gpu * 100)}%</span>
+            </div>
+          )}
           <div className={styles.drawerRow}>
             <span className={styles.drawerKey}>Uptime</span>
             <span className={styles.drawerValue}>{formatUptime(metrics.uptime)}</span>
