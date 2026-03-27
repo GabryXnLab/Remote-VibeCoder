@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import {
   Button, Badge, Spinner, Header, Section,
   ConflictWarningDialog, type ConflictContext,
-  ToastContainer,
+  ToastContainer, ResourceMonitor,
 } from '@/components'
 import { useToast }    from '@/hooks/useToast'
 import { useRepos }    from '@/hooks/useRepos'
 import { useCommit }   from '@/hooks/useCommit'
+import { useResourceMonitor } from '@/hooks/useResourceMonitor'
 import { CommitModal } from '@/components'
 import {
   cloneRepo, pullRepo, forcePullRepo, pushRepo, getSyncStatus,
@@ -44,6 +45,7 @@ export function ProjectsPage() {
   const { toasts, toast }     = useToast()
   const { repos, sessions, loading, loadAll, setRepos } = useRepos()
   const commit                = useCommit({ toast, loadAll, setRepos })
+  const { metrics }           = useResourceMonitor()
 
   // Conflict dialog state (tightly coupled to pull/overwrite/commitFirst handlers)
   const [conflictOpen,    setConflictOpen]    = useState(false)
@@ -257,6 +259,7 @@ export function ProjectsPage() {
         <div className={styles.logo}>⌘ <span>Remote</span>VibeCoder</div>
         <div className={styles.actions}>
           <Button variant="secondary" size="sm" onClick={loadAll} title="Aggiorna">↺</Button>
+          <ResourceMonitor metrics={metrics} />
           <Button variant="secondary" size="sm" onClick={logout}>Logout</Button>
         </div>
       </Header>
