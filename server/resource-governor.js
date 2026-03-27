@@ -138,7 +138,7 @@ function getCpuUsage() {
       const totalDiff = b.total - a.total;
       if (totalDiff === 0) return resolve(0);
       resolve(Math.max(0, Math.min(1, 1 - idleDiff / totalDiff)));
-    }, 100);
+    }, 300); // was 100ms — wider window filters sub-200ms transient spikes
   });
 }
 
