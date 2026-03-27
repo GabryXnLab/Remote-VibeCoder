@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import 'xterm/css/xterm.css'
 import {
-  Button, StatusDot, SettingsDropdown,
+  Button, StatusDot, SettingsDropdown, ResourceMonitor,
 } from '@/components'
+import { useResourceMonitor }  from '@/hooks/useResourceMonitor'
 import { TerminalOpenMenu }  from '@/components/TerminalOpenMenu/TerminalOpenMenu'
 import { TerminalSidebar }   from '@/components/TerminalSidebar/TerminalSidebar'
 import { TerminalToolbar }   from '@/components/TerminalToolbar/TerminalToolbar'
@@ -60,9 +61,11 @@ export function TerminalPage() {
 
   // ── Terminal manager ──────────────────────────────────────────────────────
   const {
-    termMapRef, connStates, isActivity, sendToWs,
+    termMapRef, connStates, streamStates, isActivity, sendToWs,
     destroyInstance, renderTerminal, setActiveSessionId: syncActiveId,
   } = useTerminalManager({ isDark, displayMode })
+
+  const { metrics } = useResourceMonitor()
 
   // Keep terminal manager in sync with active session
   useEffect(() => { syncActiveId(activeSessionId) }, [activeSessionId, syncActiveId])
@@ -127,10 +130,24 @@ export function TerminalPage() {
     fetchSessions()
   }, [fetchSessions])
 
+  // ── Streaming settings ────────────────────────────────────────────────────
+  const [streamingSettings, setStreamingSettings] = useState<{
+    streamingCpuWarnThreshold: number
+    streamingCpuCriticalThreshold: number
+  } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/settings/streaming')
+      .then(r => r.json())
+      .then(setStreamingSettings)
+      .catch(() => {})
+  }, [])
+
   // ── Derived state ──────────────────────────────────────────────────────────
   const activeInst = termMapRef.current.get(activeSessionId)
   const activeMeta = sessions.find((s: SessionMetadata) => s.sessionId === activeSessionId)
   const connState  = connStates[activeSessionId] ?? 'connecting'
+  const activeStreamState = streamStates[activeSessionId] ?? 'ok'
 
   const statusLabel: Record<ConnectionState, string> = {
     connecting: 'Connecting…', connected: 'Connected', disconnected: 'Disconnected',
@@ -179,6 +196,45 @@ export function TerminalPage() {
         </label>
       ),
     },
+    {
+      title: 'Streaming (risorse)',
+      content: (
+        <div className={styles.settingsStreamingSection}>
+          <label className={styles.settingsSmallLabel}>
+            Soglia pausa CPU (%)
+            <input
+              key={streamingSettings ? 'loaded' : 'loading'}
+              type="number" min="1" max="99"
+              defaultValue={streamingSettings?.streamingCpuWarnThreshold ?? 80}
+              className={styles.settingsNumInput}
+              onBlur={async (e) => {
+                await fetch('/api/settings/streaming', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ streamingCpuWarnThreshold: Number(e.target.value) }),
+                })
+              }}
+            />
+          </label>
+          <label className={styles.settingsSmallLabel}>
+            Soglia kill CPU (%)
+            <input
+              key={streamingSettings ? 'loaded' : 'loading'}
+              type="number" min="1" max="99"
+              defaultValue={streamingSettings?.streamingCpuCriticalThreshold ?? 90}
+              className={styles.settingsNumInput}
+              onBlur={async (e) => {
+                await fetch('/api/settings/streaming', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ streamingCpuCriticalThreshold: Number(e.target.value) }),
+                })
+              }}
+            />
+          </label>
+        </div>
+      ),
+    },
   ]
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -219,6 +275,8 @@ export function TerminalPage() {
           <Button variant="toolbar" onClick={() => setSidebarOpen(true)} title="Switch terminal">≡</Button>
         )}
 
+        <ResourceMonitor metrics={metrics} />
+
         <div className={styles.statusArea}>
           <StatusDot state={connState} activity={isActivity} />
           <span className={styles.statusText}>{statusLabel[connState]}</span>
@@ -227,6 +285,28 @@ export function TerminalPage() {
 
       {/* Main content area */}
       <div className={styles.main}>
+        {/* Streaming pause overlay */}
+        {activeStreamState === 'warn' && (
+          <div className={styles.streamOverlay}>
+            <div className={[styles.streamOverlayBanner, styles.warn].join(' ')}>
+              ⏸ Streaming in pausa — risorse VM in uso
+              <div className={styles.streamOverlaySubtext}>
+                Il terminale continua in background. Riprende automaticamente.
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Streaming kill overlay */}
+        {activeStreamState === 'suspended' && (
+          <div className={styles.streamOverlay}>
+            <div className={[styles.streamOverlayBanner, styles.critical].join(' ')}>
+              🔴 Connessione sospesa — VM sotto pressione critica
+              <div className={styles.streamOverlaySubtext}>
+                In attesa che la CPU scenda… Riconnessione automatica.
+              </div>
+            </div>
+          </div>
+        )}
         {isMobile ? (
           <div className={styles.mobileTermWrapper} data-mode={displayMode}>
             {activeSessionId && makeTerminalDiv(activeSessionId)}

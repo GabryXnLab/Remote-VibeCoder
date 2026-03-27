@@ -60,3 +60,6 @@ export { WindowManager }    from './WindowManager/WindowManager'
 
 export { ToastContainer }   from './Toast/Toast'
 export type { ToastContainerProps } from './Toast/Toast'
+
+export { ResourceMonitor } from './ResourceMonitor/ResourceMonitor'
+export type { ResourceMonitorProps } from './ResourceMonitor/ResourceMonitor'
