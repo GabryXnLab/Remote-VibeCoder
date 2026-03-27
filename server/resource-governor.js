@@ -142,6 +142,40 @@ function getCpuUsage() {
   });
 }
 
+// ─── Streaming state update (shared by poll() and recovery timer) ────────────
+
+/**
+ * Re-evaluates streaming state given a fresh CPU reading.
+ * Handles debounce and callback emission. Safe to call from any timer.
+ */
+function _updateStreamingState(cpu) {
+  const th = getStreamingThresholds();
+  let newStreamState;
+  if (cpu >= th.critical)      newStreamState = 'critical';
+  else if (cpu >= th.warn)     newStreamState = 'warn';
+  else                         newStreamState = 'ok';
+
+  if (newStreamState !== _streamState) {
+    if (newStreamState === 'ok') {
+      if (!_okDebounceTimer) {
+        _okDebounceTimer = setTimeout(() => {
+          _okDebounceTimer = null;
+          _streamState = 'ok';
+          _emitStreamStateChange('ok', _stats);
+        }, 3000);
+        _okDebounceTimer.unref?.();
+      }
+    } else {
+      if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
+      _streamState = newStreamState;
+      _emitStreamStateChange(newStreamState, _stats);
+    }
+  } else if (newStreamState !== 'ok' && _okDebounceTimer) {
+    clearTimeout(_okDebounceTimer);
+    _okDebounceTimer = null;
+  }
+}
+
 // ─── Core polling function ──────────────────────────────────────────────────
 
 // Lazy-load config module to avoid circular dep. Graceful if unavailable.
@@ -233,34 +267,7 @@ async function poll() {
 
   // ── Streaming state machine (CPU-based) ──────────────────────────────────
   if (_cpuUsage !== null) {
-    const th = getStreamingThresholds();
-    let newStreamState;
-    if (_cpuUsage >= th.critical)      newStreamState = 'critical';
-    else if (_cpuUsage >= th.warn)     newStreamState = 'warn';
-    else                               newStreamState = 'ok';
-
-    if (newStreamState !== _streamState) {
-      if (newStreamState === 'ok') {
-        // Debounce: only transition to ok after 3s of sustained low CPU
-        if (!_okDebounceTimer) {
-          _okDebounceTimer = setTimeout(() => {
-            _okDebounceTimer = null;
-            _streamState = 'ok';
-            _emitStreamStateChange('ok', _stats);
-          }, 3000);
-          _okDebounceTimer.unref?.();
-        }
-      } else {
-        // Immediate transition for warn/critical; cancel pending ok debounce
-        if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
-        _streamState = newStreamState;
-        _emitStreamStateChange(newStreamState, _stats);
-      }
-    } else if (newStreamState !== 'ok' && _okDebounceTimer) {
-      // CPU went back up while debounce was pending — cancel debounce
-      clearTimeout(_okDebounceTimer);
-      _okDebounceTimer = null;
-    }
+    _updateStreamingState(_cpuUsage);
   }
 
   // Reschedule with adaptive interval
