@@ -63,3 +63,9 @@ export type { ToastContainerProps } from './Toast/Toast'
 
 export { ResourceMonitor } from './ResourceMonitor/ResourceMonitor'
 export type { ResourceMonitorProps } from './ResourceMonitor/ResourceMonitor'
+
+export { MobileHeader } from './MobileHeader/MobileHeader'
+export type { MobileHeaderProps } from './MobileHeader/MobileHeader'
+
+export { ResourceBar } from './ResourceBar/ResourceBar'
+export type { ResourceBarProps } from './ResourceBar/ResourceBar'

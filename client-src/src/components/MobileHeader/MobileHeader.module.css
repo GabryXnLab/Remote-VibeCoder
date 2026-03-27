@@ -1,0 +1,30 @@
+.header {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-panel);
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.backBtn {
+  flex-shrink: 0;
+  padding: 4px 10px !important;
+}
+
+.title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent-orange-light);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.iconBtn {
+  flex-shrink: 0;
+}

@@ -34,6 +34,7 @@
   top: calc(100% + 8px);
   right: 0;
   width: 230px;
+  max-width: calc(100vw - 24px);
   background: var(--bg-secondary);
   border: 1px solid var(--border-panel);
   border-radius: 10px;

@@ -42,9 +42,10 @@ function formatUptime(seconds: number): string {
 
 export interface ResourceMonitorProps {
   metrics: HealthMetrics
+  compact?: boolean
 }
 
-export function ResourceMonitor({ metrics }: ResourceMonitorProps) {
+export function ResourceMonitor({ metrics, compact = false }: ResourceMonitorProps) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const widgetRef = useRef<HTMLDivElement>(null)
 
@@ -77,7 +78,11 @@ export function ResourceMonitor({ metrics }: ResourceMonitorProps) {
   return (
     <div
       ref={widgetRef}
-      className={[styles.widget, widgetState !== 'ok' ? styles[widgetState] : ''].filter(Boolean).join(' ')}
+      className={[
+          styles.widget,
+          compact ? styles.widgetCompact : '',
+          widgetState !== 'ok' ? styles[widgetState] : '',
+        ].filter(Boolean).join(' ')}
       onClick={toggleDrawer}
       title="Risorse VM — clicca per dettagli"
     >
