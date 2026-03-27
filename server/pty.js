@@ -5,6 +5,7 @@ const path       = require('path');
 const os         = require('os');
 const { execFile } = require('child_process');
 const governor   = require('./resource-governor');
+const configModule = require('./config');
 
 // Validate tmux session name to prevent injection
 const SESSION_NAME_RE = /^[a-zA-Z0-9_.-]+$/;
@@ -110,6 +111,69 @@ function handlePtyUpgrade(ws, req) {
   // Register with resource governor for tracking
   governor.registerPty(sessionName, ws);
 
+  // ─── Streaming pause/resume/kill ──────────────────────────────────────────
+
+  let isPaused    = false;
+  let isKilled    = false;
+
+  function getStreamingConfig() {
+    const cfg = configModule.get();
+    return {
+      pauseEnabled: cfg.streamingPauseEnabled !== false,
+      killEnabled:  cfg.streamingKillEnabled  !== false,
+    };
+  }
+
+  async function pauseStreaming(metrics) {
+    if (isPaused || isKilled) return;
+    isPaused = true;
+    console.log(`[pty] Pausing stream for "${sessionName}" (CPU ${Math.round((metrics.cpu ?? 0) * 100)}%)`);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: 'stream-pause', reason: 'high-cpu', cpu: metrics.cpu ?? null }));
+    }
+  }
+
+  async function resumeStreaming(metrics) {
+    if (!isPaused || isKilled) return;
+    isPaused = false;
+    console.log(`[pty] Resuming stream for "${sessionName}"`);
+    try {
+      const buffered = await captureScrollback(sessionName);
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: 'stream-resume', buffered: buffered || '' }));
+      }
+    } catch (err) {
+      console.error('[pty] captureScrollback on resume failed:', err.message);
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: 'stream-resume', buffered: '' }));
+      }
+    }
+  }
+
+  async function killStreaming(metrics) {
+    if (isKilled) return;
+    isKilled = true;
+    isPaused = false;
+    console.log(`[pty] Killing stream for "${sessionName}" (CPU ${Math.round((metrics.cpu ?? 0) * 100)}%)`);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: 'stream-kill', reason: 'critical-cpu', cpu: metrics.cpu ?? null }));
+    }
+    await new Promise(r => setTimeout(r, 500));
+    if (ws.readyState !== ws.CLOSED) {
+      try { ws.close(1001, 'Resource pressure'); } catch {}
+    }
+    try { ptyProcess.kill(); } catch {}
+  }
+
+  const onStreamStateChange = (newState, metrics) => {
+    const cfg = getStreamingConfig();
+    if (newState === 'warn'     && cfg.pauseEnabled) pauseStreaming(metrics);
+    else if (newState === 'critical' && cfg.killEnabled)  killStreaming(metrics);
+    else if (newState === 'ok')                           resumeStreaming(metrics);
+  };
+
+  governor.onStreamStateChange(onStreamStateChange);
+
   console.log(`[pty] Attached to tmux session "${sessionName}" (pid ${ptyProcess.pid}) [total PTYs: ${governor.stats()?.totalPtyConnections || '?'}]`);
 
   // Enable tmux mouse mode
@@ -132,6 +196,7 @@ function handlePtyUpgrade(ws, req) {
       }
       return;
     }
+    if (isPaused || isKilled) return; // scarta dati durante pausa/kill
     if (ws.readyState === ws.OPEN) {
       ws.send(Buffer.from(data), { binary: true });
     }
@@ -178,6 +243,15 @@ function handlePtyUpgrade(ws, req) {
             Math.max(1, Math.min(200, msg.rows))
           );
         }
+          // resume-session: client reconnected after stream-kill
+          if (msg.type === 'resume-session') {
+            console.log(`[pty] Client requested resume for "${sessionName}"`);
+            captureScrollback(sessionName).then(buffered => {
+              if (buffered && ws.readyState === ws.OPEN) {
+                ws.send(Buffer.from(buffered), { binary: true });
+              }
+            }).catch(() => {});
+          }
         return;
       } catch (_) {}
     }
@@ -198,6 +272,7 @@ function handlePtyUpgrade(ws, req) {
     if (cleaned) return;
     cleaned = true;
     governor.unregisterPty(sessionName, ws);
+    governor.offStreamStateChange(onStreamStateChange);
     try { ptyProcess.kill(); } catch (_) {}
   }
 

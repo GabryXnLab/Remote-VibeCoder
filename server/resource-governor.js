@@ -38,9 +38,20 @@ const POLL_INTERVAL = {
   [PRESSURE.CRITICAL]: 10_000,  // 10s
 };
 
+// ─── Streaming CPU thresholds (read from config at each poll) ───────────────
+// Defaults; overridden live from configModule.get() if available
+const DEFAULT_CPU_WARN     = 0.80;
+const DEFAULT_CPU_CRITICAL = 0.90;
+
+// ─── Streaming state ─────────────────────────────────────────────────────────
+let _streamState      = 'ok';       // 'ok' | 'warn' | 'critical'
+let _streamCallbacks  = [];
+let _okDebounceTimer  = null;       // 3s debounce before emitting 'ok'
+
 // ─── State ──────────────────────────────────────────────────────────────────
 let _pressure   = PRESSURE.LOW;
 let _stats      = null;
+let _cpuUsage   = null;
 let _timer      = null;
 let _callbacks  = [];
 let _activePtys = new Map(); // sessionName → Set<ws>
@@ -95,13 +106,68 @@ function readLoadAvg() {
   }
 }
 
+// ─── CPU sampling from /proc/stat ─────────────────────────────────────────
+// Returns { idle, total } counters from the aggregate 'cpu' line.
+function readProcStat() {
+  try {
+    const raw  = fs.readFileSync('/proc/stat', 'utf8');
+    const line = raw.split('\n').find(l => l.startsWith('cpu '));
+    if (!line) return null;
+    const vals = line.trim().split(/\s+/).slice(1).map(Number);
+    // user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice
+    const idle  = vals[3] + (vals[4] || 0); // idle + iowait
+    const total = vals.reduce((s, v) => s + v, 0);
+    return { idle, total };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Measures actual CPU utilisation by diffing /proc/stat twice over 100ms.
+ * Returns a value 0.0–1.0, or null on non-Linux hosts.
+ */
+function getCpuUsage() {
+  return new Promise((resolve) => {
+    const a = readProcStat();
+    if (!a) return resolve(null);
+    setTimeout(() => {
+      const b = readProcStat();
+      if (!b) return resolve(null);
+      const idleDiff  = b.idle  - a.idle;
+      const totalDiff = b.total - a.total;
+      if (totalDiff === 0) return resolve(0);
+      resolve(Math.max(0, Math.min(1, 1 - idleDiff / totalDiff)));
+    }, 100);
+  });
+}
+
 // ─── Core polling function ──────────────────────────────────────────────────
 
-function poll() {
+// Lazy-load config module to avoid circular dep. Graceful if unavailable.
+let _configModule = null;
+function getStreamingThresholds() {
+  try {
+    if (!_configModule) _configModule = require('./config');
+    const cfg = _configModule.get();
+    return {
+      warn:     (cfg.streamingCpuWarnThreshold     ?? 80) / 100,
+      critical: (cfg.streamingCpuCriticalThreshold ?? 90) / 100,
+    };
+  } catch {
+    return { warn: DEFAULT_CPU_WARN, critical: DEFAULT_CPU_CRITICAL };
+  }
+}
+
+async function poll() {
+  // Measure CPU before reading meminfo to overlap the 100ms sample window
+  const cpuPromise = getCpuUsage();
   const mem  = readMeminfo();
   const load = readLoadAvg();
   const proc = process.memoryUsage();
   const heap = v8.getHeapStatistics();
+
+  _cpuUsage = await cpuPromise; // null on non-Linux
 
   const usedRatio = 1 - (mem.available / mem.total);
   const swapUsedRatio = mem.swapTotal > 0
@@ -139,6 +205,7 @@ function poll() {
       external:    Math.round(proc.external / 1048576),
     },
     load,
+    cpu: _cpuUsage,   // 0.0-1.0 or null
     activePtys: _activePtys.size,
     totalPtyConnections: [..._activePtys.values()].reduce((s, set) => s + set.size, 0),
     pressure: newPressure,
@@ -164,6 +231,38 @@ function poll() {
     }
   }
 
+  // ── Streaming state machine (CPU-based) ──────────────────────────────────
+  if (_cpuUsage !== null) {
+    const th = getStreamingThresholds();
+    let newStreamState;
+    if (_cpuUsage >= th.critical)      newStreamState = 'critical';
+    else if (_cpuUsage >= th.warn)     newStreamState = 'warn';
+    else                               newStreamState = 'ok';
+
+    if (newStreamState !== _streamState) {
+      if (newStreamState === 'ok') {
+        // Debounce: only transition to ok after 3s of sustained low CPU
+        if (!_okDebounceTimer) {
+          _okDebounceTimer = setTimeout(() => {
+            _okDebounceTimer = null;
+            _streamState = 'ok';
+            _emitStreamStateChange('ok', _stats);
+          }, 3000);
+          _okDebounceTimer.unref?.();
+        }
+      } else {
+        // Immediate transition for warn/critical; cancel pending ok debounce
+        if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
+        _streamState = newStreamState;
+        _emitStreamStateChange(newStreamState, _stats);
+      }
+    } else if (newStreamState !== 'ok' && _okDebounceTimer) {
+      // CPU went back up while debounce was pending — cancel debounce
+      clearTimeout(_okDebounceTimer);
+      _okDebounceTimer = null;
+    }
+  }
+
   // Reschedule with adaptive interval
   reschedule();
 }
@@ -171,7 +270,7 @@ function poll() {
 function reschedule() {
   if (_timer) clearTimeout(_timer);
   const interval = POLL_INTERVAL[_pressure] || POLL_INTERVAL[PRESSURE.LOW];
-  _timer = setTimeout(poll, interval);
+  _timer = setTimeout(() => poll().catch(e => console.error('[resource-governor] poll error:', e.message)), interval);
   _timer.unref(); // Don't keep process alive
 }
 
@@ -229,18 +328,28 @@ function getEarlyBufferLimit() {
   }
 }
 
+function _emitStreamStateChange(state, stats) {
+  for (const cb of _streamCallbacks) {
+    try { cb(state, stats); } catch (e) {
+      console.error('[resource-governor] streamState callback error:', e.message);
+    }
+  }
+}
+
+function onStreamStateChange(cb)  { _streamCallbacks.push(cb); }
+function offStreamStateChange(cb) { _streamCallbacks = _streamCallbacks.filter(x => x !== cb); }
+function streamState()            { return _streamState; }
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 function start() {
-  poll(); // Initial poll
+  poll().catch(e => console.error('[resource-governor] Initial poll error:', e.message)); // Initial poll
   console.log('[resource-governor] Started — adaptive resource monitoring active');
 }
 
 function stop() {
-  if (_timer) {
-    clearTimeout(_timer);
-    _timer = null;
-  }
+  if (_timer) { clearTimeout(_timer); _timer = null; }
+  if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
 }
 
 function pressure() {
@@ -269,4 +378,7 @@ module.exports = {
   getEarlyBufferLimit,
   MAX_PTYS_PER_SESSION,
   MAX_TOTAL_PTYS,
+  onStreamStateChange,
+  offStreamStateChange,
+  streamState,
 };

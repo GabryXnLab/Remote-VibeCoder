@@ -7,9 +7,10 @@ import { WebLinksAddon } from 'xterm-addon-web-links'
 import type { ConnectionState } from '@/types/common'
 import {
   RECONNECT_BASE_MS, RECONNECT_MAX_MS, RECONNECT_FACTOR,
+  HEALTH_POLL_MS, HEALTH_POLL_FAST_MS,
   MIN_COLS, FONT_SIZE_NORMAL, FONT_SIZE_ZOOM_OUT,
   XTERM_DARK, XTERM_LIGHT,
-  type DisplayMode, type TermInstance,
+  type DisplayMode, type TermInstance, type StreamingState,
 } from '@/terminal/constants'
 import { setupMobileScrollOverlay } from '@/terminal/mobileScrollOverlay'
 import { setupDesktopWheelHandler }  from '@/terminal/desktopScrollHandler'
@@ -26,6 +27,7 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
 
   const [connStates, setConnStates] = useState<Record<string, ConnectionState>>({})
   const [isActivity, setIsActivity] = useState(false)
+  const [streamStates, setStreamStates] = useState<Record<string, StreamingState>>({})
 
   const activityTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeSessionIdRef = useRef<string>('')
@@ -68,6 +70,41 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     if (inst?.ws?.readyState === WebSocket.OPEN) inst.ws.send(data)
   }, [])
 
+  // Ref to break circular dependency between startHealthPolling and connectSession
+  const connectSessionRef     = useRef<(sessionId: string, inst: TermInstance) => void>(() => {})
+  const startHealthPollingRef = useRef<(sessionId: string, inst: TermInstance) => void>(() => {})
+
+  // ── Health polling: wait for CPU to drop, then reconnect ──────────────────
+  const startHealthPolling = useCallback((sessionId: string, inst: TermInstance) => {
+    if (inst.healthPollTimer) clearTimeout(inst.healthPollTimer)
+
+    // Use fast polling interval while suspended, normal interval once recovered
+    const pollInterval = inst.streamState === 'suspended' ? HEALTH_POLL_FAST_MS : HEALTH_POLL_MS
+
+    async function pollAndReconnect() {
+      try {
+        const res  = await fetch('/api/health')
+        const data = await res.json()
+        const cpu  = data.cpu as number | null
+
+        if (cpu !== null && cpu < 0.80) {
+          // CPU low enough — reconnect
+          inst.streamState = 'ok'
+          setStreamStates(prev => ({ ...prev, [sessionId]: 'ok' }))
+          inst.intentional = false
+          inst.reconnDelay = RECONNECT_BASE_MS
+          connectSessionRef.current(sessionId, inst)
+          return
+        }
+      } catch { /* fetch failed — retry */ }
+
+      // Not ready yet — poll again
+      inst.healthPollTimer = setTimeout(pollAndReconnect, pollInterval)
+    }
+
+    inst.healthPollTimer = setTimeout(pollAndReconnect, pollInterval)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Connect WS for a session ───────────────────────────────────────────────
   const connectSession = useCallback((sessionId: string, inst: TermInstance) => {
     if (inst.ws) {
@@ -95,8 +132,36 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     }
 
     ws.onmessage = (e: MessageEvent) => {
+      // Try to intercept JSON control messages
+      if (typeof e.data === 'string' && e.data.startsWith('{')) {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type === 'stream-pause') {
+            inst.streamState = 'warn'
+            setStreamStates(prev => ({ ...prev, [sessionId]: 'warn' }))
+            return // Do NOT write to terminal
+          }
+          if (msg.type === 'stream-resume') {
+            inst.streamState = 'ok'
+            setStreamStates(prev => ({ ...prev, [sessionId]: 'ok' }))
+            if (msg.buffered) inst.term.write(msg.buffered as string)
+            return
+          }
+          if (msg.type === 'stream-kill') {
+            inst.streamState = 'suspended'
+            setStreamStates(prev => ({ ...prev, [sessionId]: 'suspended' }))
+            // Cancel normal reconnect — will reconnect via health polling
+            inst.intentional = true
+            startHealthPollingRef.current(sessionId, inst)
+            return
+          }
+        } catch { /* not JSON — fall through */ }
+      }
+
+      // Normal binary or string terminal data
       if (e.data instanceof ArrayBuffer) inst.term.write(new Uint8Array(e.data))
       else inst.term.write(e.data as string)
+
       if (sessionId === activeSessionIdRef.current) {
         setIsActivity(true)
         if (activityTimerRef.current) clearTimeout(activityTimerRef.current)
@@ -117,6 +182,10 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
       inst.term.writeln('\r\n\x1b[31m[WebSocket error]\x1b[0m')
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep refs in sync so the cross-callbacks always call the latest version
+  connectSessionRef.current     = connectSession
+  startHealthPollingRef.current = startHealthPolling
 
   // ── Create/attach terminal for a session ──────────────────────────────────
   const mountTerminal = useCallback((sessionId: string, container: HTMLDivElement) => {
@@ -140,6 +209,8 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
       reconnTimer: null, reconnDelay: RECONNECT_BASE_MS, intentional: false,
+      streamState: 'ok',
+      healthPollTimer: null,
     }
     termMapRef.current.set(sessionId, inst)
 
@@ -200,6 +271,7 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
       termMapRef.current.forEach((inst) => {
         inst.intentional = true
         if (inst.reconnTimer) clearTimeout(inst.reconnTimer)
+        if (inst.healthPollTimer) clearTimeout(inst.healthPollTimer)
         if (inst.ws) { inst.ws.onclose = null; try { inst.ws.close() } catch { /* noop */ } }
         inst.term.dispose()
       })
@@ -213,6 +285,7 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     if (inst) {
       inst.intentional = true
       if (inst.reconnTimer) clearTimeout(inst.reconnTimer)
+      if (inst.healthPollTimer) clearTimeout(inst.healthPollTimer)
       if (inst.ws) { inst.ws.onclose = null; try { inst.ws.close() } catch { /* noop */ } }
       inst.term.dispose()
       termMapRef.current.delete(sessionId)
@@ -237,6 +310,7 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     termMapRef,
     connStates,
     isActivity,
+    streamStates,
     sendToWs,
     mountTerminal,
     destroyInstance,

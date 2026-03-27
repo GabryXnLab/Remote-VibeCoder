@@ -18,6 +18,7 @@ const reposRoutes    = require('./routes/repos');
 const sessionsRoutes = require('./routes/sessions');
 const { handlePtyUpgrade } = require('./pty');
 const governor       = require('./resource-governor');
+const { getGpuUsage } = require('./lib/gpuMonitor');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -142,12 +143,29 @@ app.use('/api/repos',    reposRoutes);
 app.use('/api/sessions', sessionsRoutes);
 
 // Public health check — extended with resource governor stats
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
   const govStats = governor.stats();
-  const mem = process.memoryUsage();
+  const mem      = process.memoryUsage();
+  const gpu      = await getGpuUsage();
+
+  // New spec-compatible format + legacy fields for backward compat
+  const ramUsed  = govStats ? (govStats.memory.usedPercent / 100) : null;
+  const ramTotal = govStats ? govStats.memory.totalMB  : null;
+  const ramUsedMb = govStats ? (ramTotal - govStats.memory.availableMB) : null;
+
   res.json({
-    ok:      true,
-    uptime:  Math.floor(process.uptime()),
+    // Spec fields
+    status:          govStats ? govStats.pressure.replace('moderate', 'warn').replace('low', 'ok').replace('high', 'warn') : 'ok',
+    cpu:             govStats?.cpu   ?? null,
+    ram:             ramUsed,
+    ramUsedMb:       ramUsedMb,
+    ramTotalMb:      ramTotal,
+    gpu:             gpu,
+    uptime:          Math.floor(process.uptime()),
+    streamingPaused: governor.streamState() === 'warn',
+    timestamp:       Date.now(),
+    // Legacy fields (kept for other consumers)
+    ok:            true,
     memory: {
       rss:       Math.round(mem.rss       / 1024 / 1024),
       heapUsed:  Math.round(mem.heapUsed  / 1024 / 1024),
@@ -160,10 +178,72 @@ app.get('/api/health', (_req, res) => {
       pressure:        govStats.pressure,
       activePtys:      govStats.totalPtyConnections,
       load1:           govStats.load.load1,
+      streamState:     governor.streamState(),
     } : null,
     wsConnections: wss ? wss.clients.size : 0,
     node:          process.version,
   });
+});
+
+// Streaming settings — requires auth (handled by auth guard above)
+const STREAMING_SETTINGS_DEFAULTS = {
+  streamingCpuWarnThreshold:     80,
+  streamingCpuCriticalThreshold: 90,
+  healthPollIntervalMs:          5000,
+  healthPollIntervalFastMs:      2000,
+  streamingPauseEnabled:         true,
+  streamingKillEnabled:          true,
+};
+const STREAMING_SETTINGS_KEYS = Object.keys(STREAMING_SETTINGS_DEFAULTS);
+
+app.get('/api/settings/streaming', (req, res) => {
+  const cfg = req.appConfig;
+  const result = {};
+  for (const key of STREAMING_SETTINGS_KEYS) {
+    result[key] = cfg[key] ?? STREAMING_SETTINGS_DEFAULTS[key];
+  }
+  res.json(result);
+});
+
+app.patch('/api/settings/streaming', async (req, res) => {
+  const updates = req.body;
+  if (!updates || typeof updates !== 'object') {
+    return res.status(400).json({ error: 'Body must be a JSON object' });
+  }
+
+  // Validate: only known keys, numeric thresholds in 1-99 range, booleans for flags
+  const validated = {};
+  const thresholdKeys = ['streamingCpuWarnThreshold', 'streamingCpuCriticalThreshold'];
+  const numericKeys   = ['healthPollIntervalMs', 'healthPollIntervalFastMs'];
+  const boolKeys      = ['streamingPauseEnabled', 'streamingKillEnabled'];
+
+  for (const [k, v] of Object.entries(updates)) {
+    if (!STREAMING_SETTINGS_KEYS.includes(k)) continue;
+    if (thresholdKeys.includes(k)) {
+      const n = Number(v);
+      if (!isFinite(n) || n < 1 || n > 99) return res.status(400).json({ error: `Invalid value for ${k}` });
+      validated[k] = n;
+    } else if (numericKeys.includes(k)) {
+      const n = Number(v);
+      if (!isFinite(n) || n < 1500) return res.status(400).json({ error: `${k} must be >= 1500ms` });
+      validated[k] = n;
+    } else if (boolKeys.includes(k)) {
+      validated[k] = Boolean(v);
+    }
+  }
+
+  // Write to config file (hot-reload will pick it up)
+  const { CONFIG_PATH } = require('./config');
+  const fsp = require('fs/promises');
+  try {
+    let existing = {};
+    try { existing = JSON.parse(await fsp.readFile(CONFIG_PATH, 'utf8')); } catch {}
+    await fsp.writeFile(CONFIG_PATH, JSON.stringify({ ...existing, ...validated }, null, 2) + '\n', { mode: 0o600 });
+    res.json({ ok: true, updated: Object.keys(validated) });
+  } catch (err) {
+    console.error('[settings] Failed to write config:', err);
+    res.status(500).json({ error: 'Failed to persist settings' });
+  }
 });
 
 // Serve built frontend with aggressive caching for hashed assets
