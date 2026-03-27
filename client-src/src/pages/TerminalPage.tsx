@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import 'xterm/css/xterm.css'
 import {
-  Button, StatusDot, SettingsDropdown, ResourceMonitor,
+  Button, StatusDot, SettingsDropdown, ResourceMonitor, MobileHeader, ResourceBar,
 } from '@/components'
 import { useResourceMonitor }  from '@/hooks/useResourceMonitor'
 import { TerminalOpenMenu }  from '@/components/TerminalOpenMenu/TerminalOpenMenu'
@@ -252,60 +252,83 @@ export function TerminalPage() {
   return (
     <div className={styles.page} ref={termPageRef}>
 
-      {/* Header */}
-      <header className={styles.header}>
-        <Button variant="secondary" size="sm" style={{ padding: '4px 10px' }}
-          onClick={() => navigate('/projects')}>←</Button>
+      {/* Header — mobile: MobileHeader + ResourceBar; desktop: inline header */}
+      {isMobile ? (
+        <>
+          <MobileHeader
+            sessionLabel={activeMeta?.label ?? activeSessionId ?? 'Terminal'}
+            onBack={() => navigate('/projects')}
+            onOpenMenu={() => setOpenMenuOpen(true)}
+            settingsSections={settingsSections}
+            settingsOpen={settingsOpen}
+            onSettingsToggle={() => setSettingsOpen(v => !v)}
+            onSettingsClose={() => setSettingsOpen(false)}
+            onToggleSidebar={() => setSidebarOpen(true)}
+          />
+          <ResourceBar metrics={metrics} />
+        </>
+      ) : (
+        <header className={styles.header}>
+          <Button variant="secondary" size="sm" style={{ padding: '4px 10px' }}
+            onClick={() => navigate('/projects')}>←</Button>
 
-        <span className={styles.title}>
-          {activeMeta?.label ?? activeSessionId ?? 'Terminal'}
-        </span>
+          <span className={styles.title}>
+            {activeMeta?.label ?? activeSessionId ?? 'Terminal'}
+          </span>
 
-        <Button variant="toolbar" onClick={() => setOpenMenuOpen(true)}>+</Button>
+          <Button variant="toolbar" onClick={() => setOpenMenuOpen(true)}>+</Button>
 
-        <SettingsDropdown
-          open={settingsOpen}
-          onToggle={() => setSettingsOpen(v => !v)}
-          onClose={() => setSettingsOpen(false)}
-          sections={settingsSections}
-          buttonTitle="Impostazioni"
-        />
+          <SettingsDropdown
+            open={settingsOpen}
+            onToggle={() => setSettingsOpen(v => !v)}
+            onClose={() => setSettingsOpen(false)}
+            sections={settingsSections}
+            buttonTitle="Impostazioni"
+          />
 
-        {isMobile && (
-          <Button variant="toolbar" onClick={() => setSidebarOpen(true)} title="Switch terminal">≡</Button>
-        )}
+          <ResourceMonitor metrics={metrics} />
 
-        <ResourceMonitor metrics={metrics} />
-
-        <div className={styles.statusArea}>
-          <StatusDot state={connState} activity={isActivity} />
-          <span className={styles.statusText}>{statusLabel[connState]}</span>
-        </div>
-      </header>
+          <div className={styles.statusArea}>
+            <StatusDot state={connState} activity={isActivity} />
+            <span className={styles.statusText}>{statusLabel[connState]}</span>
+          </div>
+        </header>
+      )}
 
       {/* Main content area */}
       <div className={styles.main}>
-        {/* Streaming pause overlay */}
+        {/* Streaming banner — mobile: sticky top strip; desktop: centered overlay */}
         {activeStreamState === 'warn' && (
-          <div className={styles.streamOverlay}>
-            <div className={[styles.streamOverlayBanner, styles.warn].join(' ')}>
+          isMobile ? (
+            <div className={[styles.streamBanner, styles.warn].join(' ')}>
               ⏸ Streaming in pausa — risorse VM in uso
-              <div className={styles.streamOverlaySubtext}>
-                Il terminale continua in background. Riprende automaticamente.
+            </div>
+          ) : (
+            <div className={styles.streamOverlay}>
+              <div className={[styles.streamOverlayBanner, styles.warn].join(' ')}>
+                ⏸ Streaming in pausa — risorse VM in uso
+                <div className={styles.streamOverlaySubtext}>
+                  Il terminale continua in background. Riprende automaticamente.
+                </div>
               </div>
             </div>
-          </div>
+          )
         )}
-        {/* Streaming kill overlay */}
         {activeStreamState === 'suspended' && (
-          <div className={styles.streamOverlay}>
-            <div className={[styles.streamOverlayBanner, styles.critical].join(' ')}>
+          isMobile ? (
+            <div className={[styles.streamBanner, styles.critical].join(' ')}>
               🔴 Connessione sospesa — VM sotto pressione critica
-              <div className={styles.streamOverlaySubtext}>
-                In attesa che la CPU scenda… Riconnessione automatica.
+            </div>
+          ) : (
+            <div className={styles.streamOverlay}>
+              <div className={[styles.streamOverlayBanner, styles.critical].join(' ')}>
+                🔴 Connessione sospesa — VM sotto pressione critica
+                <div className={styles.streamOverlaySubtext}>
+                  In attesa che la CPU scenda… Riconnessione automatica.
+                </div>
               </div>
             </div>
-          </div>
+          )
         )}
         {isMobile ? (
           <div className={styles.mobileTermWrapper} data-mode={displayMode}>
