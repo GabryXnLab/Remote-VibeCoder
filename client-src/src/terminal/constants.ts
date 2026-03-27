@@ -8,6 +8,10 @@ export const RECONNECT_BASE_MS = 1500
 export const RECONNECT_MAX_MS  = 30000
 export const RECONNECT_FACTOR  = 1.5
 
+// ─── Health polling ───────────────────────────────────────────────────────────
+export const HEALTH_POLL_MS      = 5000  // polling normale (ok state)
+export const HEALTH_POLL_FAST_MS = 2000  // polling veloce (warn/critical)
+
 // ─── Terminal sizing ─────────────────────────────────────────────────────────
 export const MIN_COLS          = 220
 export const SESSION_POLL_MS   = 10000
@@ -40,6 +44,8 @@ export const XTERM_LIGHT: ITheme = {
   brightCyan: '#06b6d4', brightWhite: '#f5f5f5',
 }
 
+export type StreamingState = 'ok' | 'warn' | 'critical' | 'suspended'
+
 // ─── Per-session terminal instance ───────────────────────────────────────────
 export interface TermInstance {
   term:        Terminal
@@ -49,4 +55,6 @@ export interface TermInstance {
   reconnTimer: ReturnType<typeof setTimeout> | null
   reconnDelay: number
   intentional: boolean
+  streamState:   StreamingState           // ← aggiunto
+  healthPollTimer: ReturnType<typeof setTimeout> | null  // ← aggiunto
 }
