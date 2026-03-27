@@ -44,9 +44,11 @@ const DEFAULT_CPU_WARN     = 0.80;
 const DEFAULT_CPU_CRITICAL = 0.90;
 
 // ─── Streaming state ─────────────────────────────────────────────────────────
-let _streamState      = 'ok';       // 'ok' | 'warn' | 'critical'
-let _streamCallbacks  = [];
-let _okDebounceTimer  = null;       // 3s debounce before emitting 'ok'
+let _streamState         = 'ok';    // 'ok' | 'warn' | 'critical'
+let _streamCallbacks     = [];
+let _okDebounceTimer     = null;    // 3s debounce before emitting 'ok'
+let _streamRecoveryTimer = null;    // fast CPU re-check when streaming is paused
+const STREAM_RECOVERY_POLL_MS = 5_000; // 5s between recovery checks
 
 // ─── State ──────────────────────────────────────────────────────────────────
 let _pressure   = PRESSURE.LOW;
@@ -335,7 +337,43 @@ function getEarlyBufferLimit() {
   }
 }
 
+// ─── Stream recovery polling ─────────────────────────────────────────────────
+
+/**
+ * When streaming is degraded (warn/critical), polls CPU every 5s independently
+ * from the memory-pressure timer (which could be 60s away at LOW pressure).
+ * Stops itself once streaming returns to 'ok'.
+ */
+function _startStreamRecoveryPoll() {
+  if (_streamRecoveryTimer) return; // already running
+  _streamRecoveryTimer = setInterval(async () => {
+    try {
+      const cpu = await getCpuUsage();
+      if (cpu === null) return;
+      _cpuUsage = cpu;
+      if (_stats) _stats.cpu = cpu; // keep /api/health current during recovery
+      _updateStreamingState(cpu);
+    } catch (e) {
+      console.error('[resource-governor] recovery poll error:', e.message);
+    }
+  }, STREAM_RECOVERY_POLL_MS);
+  _streamRecoveryTimer.unref?.();
+}
+
+function _stopStreamRecoveryPoll() {
+  if (_streamRecoveryTimer) {
+    clearInterval(_streamRecoveryTimer);
+    _streamRecoveryTimer = null;
+  }
+}
+
 function _emitStreamStateChange(state, stats) {
+  // Start fast recovery polling whenever streaming is degraded; stop when ok
+  if (state !== 'ok') {
+    _startStreamRecoveryPoll();
+  } else {
+    _stopStreamRecoveryPoll();
+  }
   for (const cb of _streamCallbacks) {
     try { cb(state, stats); } catch (e) {
       console.error('[resource-governor] streamState callback error:', e.message);
@@ -357,6 +395,7 @@ function start() {
 function stop() {
   if (_timer) { clearTimeout(_timer); _timer = null; }
   if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
+  _stopStreamRecoveryPoll();
 }
 
 function pressure() {
