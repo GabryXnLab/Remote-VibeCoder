@@ -27,7 +27,7 @@ jobs:
       - name: Check syntax of all server JS files
         run: |
           echo "── Checking server JS syntax ──"
-          find server -name '*.js' | while read f; do
+          find server -name '*.js' -not -path '*/node_modules/*' -type f | while read f; do
             node --check "$f" && echo "  ✓ $f" || { echo "  ✗ $f — syntax error"; exit 1; }
           done
           echo "✓ All server files passed syntax check"
@@ -138,7 +138,7 @@ jobs:
             echo "  $PREV_HEAD → $(git -C ~/$APP_DIR rev-parse HEAD)"
 
             echo "── Server-side JS syntax check (pre-deploy gate) ──"
-            find ~/$APP_DIR/server -name '*.js' | while read f; do
+            find ~/$APP_DIR/server -name '*.js' -not -path '*/node_modules/*' -type f | while read f; do
               node --check "$f" || { echo "✗ Syntax error in $f — aborting deploy"; exit 1; }
             done
             echo "✓ Server syntax OK"
