@@ -43,7 +43,7 @@ const SYNC_DISPLAY: Record<string, { label: string; color: string }> = {
 export function ProjectsPage() {
   const navigate              = useNavigate()
   const { toasts, toast }     = useToast()
-  const { repos, sessions, loading, loadAll, setRepos } = useRepos()
+  const { repos, sessions, loading, error, loadAll, setRepos } = useRepos()
   const commit                = useCommit({ toast, loadAll, setRepos })
   const { metrics }           = useResourceMonitor()
 
@@ -267,6 +267,14 @@ export function ProjectsPage() {
       <main className={styles.content}>
         {loading && <Spinner size="md" label="Caricamento repository…" style={{ padding: '40px' }} />}
 
+        {!loading && error && (
+          <div style={{ color: '#e57373', fontSize: '13px', textAlign: 'center', marginTop: '16px', padding: '0 16px' }}>
+            <strong>Errore caricamento repository:</strong> {error}
+            <br />
+            <Button variant="secondary" size="sm" onClick={loadAll} style={{ marginTop: '8px' }}>Riprova</Button>
+          </div>
+        )}
+
         {!loading && sessions.length > 0 && (
           <Section title="Active Sessions" style={{ marginBottom: '24px' }}>
             <div className={styles.repoList}>
@@ -292,7 +300,7 @@ export function ProjectsPage() {
           </Section>
         )}
 
-        {!loading && repos.length === 0 && (
+        {!loading && !error && repos.length === 0 && (
           <p style={{ color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center', marginTop: '16px' }}>
             Nessun repository trovato.
           </p>

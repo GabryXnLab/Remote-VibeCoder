@@ -25,9 +25,15 @@ export function RepoSelector({ onSelect, onCancel, title = 'Select project' }: R
 
   useEffect(() => {
     fetch('/api/repos')
-      .then(r => r.json())
-      .then((d: { repos: Repo[] }) => { setRepos(d.repos ?? []); setLoading(false) })
-      .catch(() => { setError('Failed to load repos'); setLoading(false) })
+      .then(async r => {
+        const d = await r.json()
+        if (!r.ok) throw new Error(d.error ?? `HTTP ${r.status}`)
+        setRepos((d as { repos: Repo[] }).repos ?? [])
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : 'Failed to load repos')
+      })
+      .finally(() => setLoading(false))
   }, [])
 
   const handleClone = async (repo: Repo) => {

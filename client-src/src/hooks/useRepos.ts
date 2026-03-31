@@ -42,6 +42,7 @@ export interface UseReposReturn {
   repos:    RepoWithSync[]
   sessions: Session[]
   loading:  boolean
+  error:    string | null
   loadAll:  () => Promise<void>
   setRepos: Dispatch<SetStateAction<RepoWithSync[]>>
 }
@@ -50,6 +51,7 @@ export function useRepos(): UseReposReturn {
   const [repos,    setRepos]    = useState<RepoWithSync[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading,  setLoading]  = useState(true)
+  const [error,    setError]    = useState<string | null>(null)
 
   // Ref to avoid stale closure in the polling timer.
   // The setInterval callback captures `repos` at mount time (empty array).
@@ -94,6 +96,7 @@ export function useRepos(): UseReposReturn {
 
   const loadAll = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const [reposRes, sessionsRes] = await Promise.all([
         listRepos(),
@@ -101,6 +104,7 @@ export function useRepos(): UseReposReturn {
       ])
 
       if (!reposRes.ok) {
+        setError(reposRes.error.message)
         setLoading(false)
         return
       }
@@ -133,5 +137,5 @@ export function useRepos(): UseReposReturn {
     return () => clearInterval(id)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { repos, sessions, loading, loadAll, setRepos }
+  return { repos, sessions, loading, error, loadAll, setRepos }
 }
