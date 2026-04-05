@@ -1,5 +1,6 @@
 {
   "name": "remote-vibecoder-client",
+  "packageManager": "pnpm@10.33.0",
   "version": "2.0.0",
   "private": true,
   "type": "module",

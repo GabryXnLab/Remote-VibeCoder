@@ -1,5 +1,6 @@
 {
   "name": "claude-mobile-server",
+  "packageManager": "pnpm@10.33.0",
   "version": "2.0.0",
   "description": "Remote VibeCoder — Claude Code via smartphone browser",
   "main": "index.js",

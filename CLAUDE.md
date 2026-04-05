@@ -10,13 +10,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies
-cd server && npm install
+cd server && pnpm install
 
 # Development (with auto-reload)
-npm run dev
+pnpm run dev
 
 # Production
-npm start
+pnpm start
 
 # Service management
 sudo systemctl status claude-mobile@$USER
@@ -29,7 +29,7 @@ tmux ls
 cloudflared tunnel status
 
 # Build frontend (React/Vite)
-cd client-src && npm install && npm run build
+cd client-src && pnpm install && pnpm run build
 ```
 
 No automated test suite — testing is manual via browser and systemd logs.
