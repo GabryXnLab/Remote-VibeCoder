@@ -66,20 +66,22 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 sudo apt-get install -y git tmux curl build-essential nginx certbot python3-certbot-nginx
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt-get install -y nodejs
-npm install -g @anthropic-ai/claude-code
+npm install -g pnpm @anthropic-ai/claude-code
 ```
 
 ### 3. App
 ```bash
 git clone https://github.com/GabryXn/Remote-VibeCoder.git ~/claude-mobile
-cd ~/claude-mobile/server && npm install
+cd ~/claude-mobile/server && pnpm install
+cd ~/claude-mobile/client-src && pnpm install && pnpm run build
 ```
 
 ### 4. Config
 ```bash
 mkdir -p ~/.claude-mobile
-# Create ~/.claude-mobile/config.json
-# Schema: { passwordHash, passwordSalt, sessionSecret, githubPat, githubUser }
+# Create ~/.claude-mobile/config.json — see docs/config.example.json for the schema.
+# This file contains your hashed password, session secret, and GitHub PAT.
+# NEVER share or commit this file.
 ```
 
 ### 5. Services
@@ -110,3 +112,4 @@ sudo journalctl -u claude-mobile@$USER -f
 - **Cloudflare Tunnel**: do not add `disableChunkedEncoding` to `cloudflared.yml` — it breaks WebSocket. This is an alternative to the Nginx setup provided by `setup.sh`.
 - **Git Credentials**: The `setup.sh` script installs a credential helper at `~/bin/git-askpass-claude.sh` which uses your GitHub PAT for git operations.
 - **First run**: after opening the terminal in the browser, type `claude` and complete the OAuth flow to link your Anthropic account.
+- **Config file security**: `~/.claude-mobile/config.json` contains your hashed password and GitHub PAT. It is created by `setup.sh` and lives outside the repository. Never share it, commit it, or make it world-readable (`chmod 600 ~/.claude-mobile/config.json`). See `docs/config.example.json` for the schema.

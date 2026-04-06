@@ -5,6 +5,8 @@ dist/
 .env
 *.log
 .worktrees/
+.superpowers/
+CURRENT_CONTEXT.md
 
 # >>> GitSync-KDE (auto-managed — do not remove) >>>
 # KDE folder icon (managed by GitSync-KDE)

@@ -43,13 +43,13 @@ Questo file contiene i mandati fondamentali e le linee guida operative per Gemin
 ### Comandi Utili
 ```bash
 # Frontend (client-src)
-npm run dev        # Sviluppo locale
-npm run build      # Build di produzione
-npm run typecheck  # Validazione tipi (MANDATORIO prima di finire un task)
+pnpm run dev        # Sviluppo locale
+pnpm run build      # Build di produzione
+pnpm run typecheck  # Validazione tipi (MANDATORIO prima di finire un task)
 
 # Backend (server)
-npm run dev        # Server con hot-reload
-npm start          # Produzione
+pnpm run dev        # Server con hot-reload
+pnpm start          # Produzione
 
 # Sistema
 sudo systemctl status claude-mobile@$USER
