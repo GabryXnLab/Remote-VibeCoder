@@ -3,7 +3,18 @@ node_modules/
 client-src/node_modules/
 dist/
 .env
+.env.*
 *.log
+
+# Credentials & secrets
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+*.secret
+credentials*.json
+service-account*.json
 .worktrees/
 .superpowers/
 CURRENT_CONTEXT.md
