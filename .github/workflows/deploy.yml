@@ -6,15 +6,23 @@ on:
 
 jobs:
   audit:
-    name: npm audit
+    name: pnpm audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: server/pnpm-lock.yaml
       - name: Audit server dependencies
         run: |
           cd server
-          npm ci --ignore-scripts
-          npm audit --audit-level=high
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm audit --audit-level=high
 
   validate-server:
     name: Server JS syntax check
@@ -37,15 +45,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: client-src/pnpm-lock.yaml
       - name: Install frontend dependencies
-        run: cd client-src && npm ci
+        run: cd client-src && pnpm install --frozen-lockfile
       - name: tsc --noEmit (strict gate)
-        run: cd client-src && npx tsc --noEmit
+        run: cd client-src && pnpm exec tsc --noEmit
       - name: Vite build (verify bundle compiles)
-        run: cd client-src && npm run build
+        run: cd client-src && pnpm run build
       - name: Verify build output completeness
         run: |
           echo "── Checking build output ──"
@@ -144,13 +157,13 @@ jobs:
             echo "✓ Server syntax OK"
 
             echo "── Installing server dependencies ──"
-            cd ~/$APP_DIR/server && npm ci --omit=dev
+            cd ~/$APP_DIR/server && pnpm install --frozen-lockfile --prod
 
             echo "── Installing frontend dependencies (including devDeps for build) ──"
-            cd ~/$APP_DIR/client-src && npm ci
+            cd ~/$APP_DIR/client-src && pnpm install --frozen-lockfile
 
             echo "── Building frontend (Vite → dist/) ──"
-            cd ~/$APP_DIR/client-src && npm run build
+            cd ~/$APP_DIR/client-src && pnpm run build
 
             echo "── Verifying build output ──"
             test -f ~/$APP_DIR/dist/index.html \
