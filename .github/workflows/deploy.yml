@@ -144,6 +144,9 @@ jobs:
           script: |
             set -euo pipefail
 
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
             echo "── Checking for pnpm ──"
             if ! command -v pnpm &>/dev/null; then
               echo "pnpm not found, installing..."
