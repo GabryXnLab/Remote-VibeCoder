@@ -251,7 +251,16 @@ export NVM_DIR="$HOME/.nvm"
 # shellcheck source=/dev/null
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 
-info "Installing global npm packages (Claude Code, TypeScript, Vite, Clasp, etc.)…"
+info "Installing global npm packages (pnpm, Claude Code, TypeScript, Vite, Clasp, etc.)…"
+
+# pnpm
+if command -v pnpm &>/dev/null; then
+  success "pnpm already installed: $(pnpm --version)"
+else
+  info "Installing pnpm globally…"
+  npm install -g pnpm
+  success "pnpm installed"
+fi
 
 # Core CLI
 if command -v claude &>/dev/null; then
@@ -304,13 +313,13 @@ fi
 
 info "Installing Node.js dependencies (this may take a few minutes)…"
 info "Installing server dependencies…"
-cd "$APP_DIR/server" && npm install
+cd "$APP_DIR/server" && pnpm install
 
 info "Installing client dependencies…"
-cd "$APP_DIR/client-src" && npm install
+cd "$APP_DIR/client-src" && pnpm install
 
 info "Building React frontend…"
-cd "$APP_DIR/client-src" && npm run build
+cd "$APP_DIR/client-src" && pnpm run build
 success "Frontend built"
 
 success "All dependencies installed"
