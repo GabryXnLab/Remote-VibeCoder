@@ -23,13 +23,22 @@ export PATH="$PATH:$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo 'defau
 Because system directories like `/usr/bin` come first in the default `PATH`, the script was inadvertently executing the system-level `npm` (located at `/usr/bin/npm`) instead of the user-level `npm` managed by `nvm`. The system-level `npm` attempts to install global packages into `/usr/lib/node_modules/`, which requires root privileges, leading to the `EACCES` permission denied error.
 
 ## Solution
-I modified the SSH deployment script to **prepend** the `nvm` node binary path to the `PATH` variable:
+I modified both the SSH deployment script in `.github/workflows/deploy.yml` and the initial configuration script `setup.sh` to **prepend** a robustly detected `nvm` node binary path to the `PATH` variable.
+
+Instead of relying on `node -v` (which might inadvertently return the system-level node), I implemented a version-sorting logic to find the latest installed version within the `.nvm` directory:
 
 ```bash
-export PATH="$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo 'default')/bin:$PATH"
+# In .github/workflows/deploy.yml
+LATEST_NODE=$(ls -1 "$HOME/.nvm/versions/node/" 2>/dev/null | sort -V | tail -n1 || echo "default")
+export PATH="$HOME/.nvm/versions/node/$LATEST_NODE/bin:$PATH"
+
+# In setup.sh
+LATEST_NODE=$(ls -1 "$NVM_DIR/versions/node/" 2>/dev/null | sort -V | tail -n1 || true)
+export PATH="$NVM_DIR/versions/node/${LATEST_NODE:-default}/bin:$PATH"
 ```
 
 ## Verification
 - By prepending the path, the shell finds the `npm` binary inside the user's `.nvm` directory before searching system paths.
+- Using version-sorting to find the NVM-specific directory path is more reliable than executing `node -v` in an environment where PATH precedence is currently broken.
 - The `nvm`-managed `npm` is configured to install global packages within the user's home directory, which does not require `sudo`.
-- This change ensures that `command -v pnpm` and `npm install -g pnpm` correctly target the user-space Node environment.
+- This change ensures that all `npm install -g` commands (for `pnpm`, `claude-code`, `gemini-cli`, etc.) correctly target the user-space Node environment, preventing `EACCES` errors during both initial setup and subsequent deployments.

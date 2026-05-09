@@ -152,7 +152,9 @@ jobs:
             fi
 
             # Fallback for common nvm paths if above didn't work or if installed differently
-            export PATH="$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo 'default')/bin:$PATH"
+            # We use the latest installed version in NVM to avoid conflicts with system node
+            LATEST_NODE=$(ls -1 "$HOME/.nvm/versions/node/" 2>/dev/null | sort -V | tail -n1 || echo "default")
+            export PATH="$HOME/.nvm/versions/node/$LATEST_NODE/bin:$PATH"
 
             echo "── Environment Diagnostics ──"
             echo "APP_DIR: ${APP_DIR:-<not set>}"

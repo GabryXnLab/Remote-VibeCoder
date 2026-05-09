@@ -251,6 +251,11 @@ export NVM_DIR="$HOME/.nvm"
 # shellcheck source=/dev/null
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
 
+# Prepend nvm node binary path to PATH to ensure user-space npm is used for global installs.
+# We use the latest installed version in NVM to avoid conflicts with system node.
+LATEST_NODE=$(ls -1 "$NVM_DIR/versions/node/" 2>/dev/null | sort -V | tail -n1 || true)
+export PATH="$NVM_DIR/versions/node/${LATEST_NODE:-default}/bin:$PATH"
+
 info "Installing global npm packages (pnpm, Claude Code, TypeScript, Vite, Clasp, etc.)…"
 
 # pnpm
