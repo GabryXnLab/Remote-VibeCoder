@@ -56,7 +56,7 @@ pnpm start          # Produzione
 sudo systemctl status claude-mobile@$USER
 sudo journalctl -u claude-mobile@$USER -f
 
-# Automazione OCI (Solo su e2-micro durante migrazione)
+# Automazione OCI (Solo su Ampere A1 durante migrazione)
 tail -f ~/Documents/Projects/Remote\ VibeCoder/acquisition_bot.log
 ```
 

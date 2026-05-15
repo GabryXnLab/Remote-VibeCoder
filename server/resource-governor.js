@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Resource Governor — lightweight adaptive resource management for e2-micro.
+ * Resource Governor — lightweight adaptive resource management for Ampere A1.
  *
  * Monitors system memory/swap usage and exposes pressure levels so other modules
  * can adapt (e.g. reduce scrollback capture, reject new connections, trigger GC).

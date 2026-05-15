@@ -4,7 +4,7 @@
 
 Costruisci un sistema completo che permetta di usare Claude Code da smartphone, senza mai accendere il computer locale. L'utente deve poter aprire il browser del telefono, scegliere su quale repository GitHub lavorare, e ritrovarsi in una sessione interattiva di Claude Code.
 
-Il sistema è nato su GCP e2-micro ma si è evoluto in un'architettura **"Nexus-Core" su Oracle Cloud Infrastructure (OCI)** per garantire potenza e versatilità.
+Il sistema è nato su Oracle Cloud Ampere A1 ma si è evoluto in un'architettura **"Nexus-Core" su Oracle Cloud Infrastructure (OCI)** per garantire potenza e versatilità.
 
 ---
 
@@ -23,8 +23,8 @@ La VM è l'unico componente che deve girare sempre. Tutto il resto (Claude Code,
 ### Networking
 
 Valuta se usare:
-- **Cloudflare Tunnel** (`cloudflared`, gratuito): crea un tunnel HTTPS con dominio stabile senza aprire porte nel firewall GCP. Approccio più sicuro.
-- **IP statico GCP + nginx**: espone la web app su HTTPS direttamente, richiede un certificato TLS (Let's Encrypt via certbot).
+- **Cloudflare Tunnel** (`cloudflared`, gratuito): crea un tunnel HTTPS con dominio stabile senza aprire porte nel firewall Oracle Cloud. Approccio più sicuro.
+- **IP statico Oracle Cloud + nginx**: espone la web app su HTTPS direttamente, richiede un certificato TLS (Let's Encrypt via certbot).
 
 Scegli l'approccio più robusto per uso mobile (connessioni intermittenti, cambio rete tra WiFi e dati).
 
@@ -134,7 +134,7 @@ Al termine, il progetto deve contenere:
     └── cloudflared.yml       # config tunnel (se si usa Cloudflare)
 ```
 
-Il `README.md` deve contenere esattamente i passi da eseguire partendo da una VM e2-micro appena creata su GCP fino ad avere il sistema funzionante e accessibile da smartphone, incluso come fare l'autenticazione OAuth di Claude Code.
+Il `README.md` deve contenere esattamente i passi da eseguire partendo da una VM Ampere A1 appena creata su Oracle Cloud fino ad avere il sistema funzionante e accessibile da smartphone, incluso come fare l'autenticazione OAuth di Claude Code.
 
 ---
 

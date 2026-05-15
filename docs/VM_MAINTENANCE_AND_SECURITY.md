@@ -1,6 +1,6 @@
-# VM e2-micro — Manutenzione e Vulnerabilità
+# VM Ampere A1 — Manutenzione e Vulnerabilità
 
-Documento di traccia degli interventi di ottimizzazione e delle vulnerabilità rilevate sul server GCP e2-micro che ospita Remote VibeCoder.
+Documento di traccia degli interventi di ottimizzazione e delle vulnerabilità rilevate sul server Oracle Cloud Ampere A1 che ospita Remote VibeCoder.
 
 ---
 
@@ -62,7 +62,7 @@ sudo snap remove lxd --purge
 multipathd: ~27 MB RAM
 ```
 
-Servizio per gestire dischi multipli ridondanti. Inutile su una VM GCP con un singolo disco. Fermato, disabilitato e mascherato:
+Servizio per gestire dischi multipli ridondanti. Inutile su una VM Oracle Cloud con un singolo disco. Fermato, disabilitato e mascherato:
 
 ```bash
 sudo systemctl stop multipathd
@@ -110,7 +110,7 @@ MaxRetentionSec=7day
 ## 2026-05-10 — Migrazione a Oracle Cloud Infrastructure (OCI)
 
 ### Contesto
-Passaggio da GCP e2-micro a OCI ARM Ampere (4 OCPU, 24GB RAM). Il sistema non è più limitato da 1GB di RAM, permettendo un'architettura più robusta e sicura.
+Passaggio da Oracle Cloud Ampere A1 a OCI ARM Ampere (4 OCPU, 24GB RAM). Il sistema non è più limitato da 1GB di RAM, permettendo un'architettura più robusta e sicura.
 
 ### Nuovi Standard di Sicurezza (Nexus-Core)
 
@@ -130,11 +130,11 @@ L'istanza è configurata con le protezioni hardware di Oracle:
 
 ### Vulnerabilità e Rischi (Monitoraggio)
 - **Capacità ARM:** Il rischio principale è la perdita dell'istanza se terminata, a causa della scarsa disponibilità di shape ARM Always Free. Prevenzione: non terminare mai l'istanza, usare snapshot dei volumi.
-- **OCI CLI Access:** La chiave API generata sull'e2-micro deve essere protetta (`chmod 600`) e idealmente rimossa una volta che l'istanza OCI è attiva e stabile.
+- **OCI CLI Access:** La chiave API generata sull'Ampere A1 deve essere protetta (`chmod 600`) e idealmente rimossa una volta che l'istanza OCI è attiva e stabile.
 
 ---
 
-## Vulnerabilità rilevate sul sistema (Legacy GCP)
+## Vulnerabilità rilevate sul sistema (Legacy Oracle Cloud)
 
 ### 1. Filesystem che si rimonta in RO senza alerting
 

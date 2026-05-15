@@ -3,7 +3,7 @@
 # Installs and configures Claude Code mobile access on a Linux VPS.
 # Run as your normal user (not root). Uses sudo internally.
 #
-# Usage: bash setup.sh [--profile=e2-micro|standard] [--skip-gcloud|--force-gcloud]
+# Usage: bash setup.sh [--profile=Ampere A1|standard] [--skip-gcloud|--force-gcloud]
 
 set -euo pipefail
 
@@ -30,12 +30,12 @@ for arg in "$@"; do
     --skip-gcloud) SKIP_GCLOUD=true ;;
     --force-gcloud) FORCE_GCLOUD=true ;;
     --help|-h)
-      echo "Usage: bash setup.sh [--profile=e2-micro|standard] [--skip-gcloud|--force-gcloud]"
+      echo "Usage: bash setup.sh [--profile=Ampere A1|standard] [--skip-gcloud|--force-gcloud]"
       echo ""
       echo "  --profile=NAME    Force a specific resource profile (default: auto-detect from RAM)"
-      echo "                    Available: e2-micro (1GB), standard (4GB+)"
+      echo "                    Available: Ampere A1 (1GB), standard (4GB+)"
       echo "  --skip-gcloud     Skip Google Cloud SDK installation"
-      echo "  --force-gcloud    Force Google Cloud SDK installation even on non-GCP machines"
+      echo "  --force-gcloud    Force Google Cloud SDK installation even on non-Cloud machines"
       exit 0
       ;;
   esac
@@ -56,8 +56,8 @@ if [ -z "$PROFILE" ]; then
   TOTAL_RAM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
   TOTAL_RAM_GB=$(( TOTAL_RAM_KB / 1024 / 1024 ))
   if [ "$TOTAL_RAM_GB" -lt 2 ]; then
-    PROFILE="e2-micro"
-    info "Auto-detected: ${TOTAL_RAM_GB}GB RAM → profile e2-micro"
+    PROFILE="Ampere A1"
+    info "Auto-detected: ${TOTAL_RAM_GB}GB RAM → profile Ampere A1"
   else
     PROFILE="standard"
     info "Auto-detected: ${TOTAL_RAM_GB}GB RAM → profile standard"
@@ -112,7 +112,7 @@ fi
 info "Applying kernel memory optimizations…"
 SYSCTL_CONF="/etc/sysctl.d/99-claude-mobile.conf"
 sudo tee "$SYSCTL_CONF" > /dev/null << 'SYSEOF'
-# Remote VibeCoder — kernel tuning for e2-micro (1GB RAM + 2GB swap)
+# Remote VibeCoder — kernel tuning for Ampere A1 (1GB RAM + 2GB swap)
 
 # Swap: prefer keeping data in RAM but use swap freely when needed.
 # 60 is default; 30 means "try harder to keep things in RAM"
@@ -170,7 +170,7 @@ else
   success "GitHub CLI installed: $(gh --version | head -n 1)"
 fi
 
-# ─── Step 2.5: Google Cloud SDK (opzionale — solo su GCP) ────────────────────
+# ─── Step 2.5: Google Cloud SDK (opzionale — solo su Cloud) ────────────────────
 _should_install_gcloud=false
 if [ "$SKIP_GCLOUD" = "false" ]; then
   if [ "$FORCE_GCLOUD" = "true" ]; then
@@ -202,7 +202,7 @@ if [ "$_should_install_gcloud" = "true" ]; then
   sudo gcloud components install alpha beta --quiet || warn "Could not install components via gcloud (this is expected if managed by apt)"
   success "Google Cloud SDK components (alpha/beta) ready"
 else
-  info "Step 2.5 skipped — not on GCP (use --force-gcloud to install anyway)"
+  info "Step 2.5 skipped — not on Cloud (use --force-gcloud to install anyway)"
 fi
 
 # ─── Step 3: Node.js LTS (via nvm, no sudo) ──────────────────────────────────

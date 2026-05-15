@@ -110,7 +110,7 @@ Migration is a rename + barrel creation — no logic changes required.
 - **Session secret and credentials** live in `~/.claude-mobile/config.json` (never in repo); sessions stored in `~/.claude-mobile/sessions/` (FileStore, 7-day TTL)
 - **`PrivateDevices=true` is intentionally absent** from the systemd unit — node-pty needs `/dev/ptmx`
 - **nginx or Cloudflare Tunnel** expose the app; nginx uses `proxy_read_timeout 86400` to keep WebSocket connections alive
-- **2GB swap file** is created during setup — essential for the 1GB RAM e2-micro VM
+- **2GB swap file** is created during setup — essential for the 1GB RAM Ampere A1 VM
 - **Single-user design** — no multi-tenancy; password-only auth
 - **Mobile UX:** 100dvh layout, virtual keyboard awareness, min 220 terminal columns, bottom-sheet modals, exponential backoff reconnect (1.5s → 30s), WebSocket heartbeat every 30s
 - **PAT security:** GitHub token passed only via GIT_ASKPASS temp file (0o600), never stored in `.git/config`
@@ -118,7 +118,7 @@ Migration is a rename + barrel creation — no logic changes required.
 
 ## Resource Optimization & All-rounder Architecture
 
-This system is optimized for an Oracle Cloud ARM Ampere VM with 24GB RAM. While it no longer suffers from the 1GB RAM limitation of the e2-micro, it is now designed to be an **intelligent orchestrator** that prioritizes workloads.
+This system is optimized for an Oracle Cloud ARM Ampere VM with 24GB RAM. While it no longer suffers from the 1GB RAM limitation of the Ampere A1, it is now designed to be an **intelligent orchestrator** that prioritizes workloads.
 
 ### V8 / Node.js Tuning
 - `--max-old-space-size=512` — Increased from 256MB to allow more complex AI operations.
@@ -263,7 +263,7 @@ The `else` branch intentionally does NOT attempt to undo the composition (no bac
 ### Related: Frontend Build Pipeline
 
 - `client-src/` → Vite builds to `dist/` → server serves `dist/`
-- `.gitignore` excludes `dist/` — builds happen on the GCP VM during deploy
+- `.gitignore` excludes `dist/` — builds happen on the Oracle Cloud VM during deploy
 - The GitHub Actions workflow (`deploy.yml`) runs `npm run build` on the VM before restarting the service
 - **All UI changes must be in `client-src/`**, not the removed `client/` directory
 
@@ -292,7 +292,7 @@ bash ~/claude-mobile/setup.sh
 # 3. Per forzare un profilo specifico:
 bash ~/claude-mobile/setup.sh --profile=standard
 
-# 4. Su macchine non-GCP il gcloud install è saltato automaticamente.
+# 4. Su macchine non-Oracle Cloud il gcloud install è saltato automaticamente.
 #    Per installarlo comunque: --force-gcloud
 #    Per saltarlo esplicitamente: --skip-gcloud
 ```
@@ -301,7 +301,7 @@ bash ~/claude-mobile/setup.sh --profile=standard
 
 | Profilo | RAM target | Node.js heap | MemoryMax | UV_THREADPOOL |
 |---------|-----------|-------------|-----------|---------------|
-| `e2-micro` | 1GB (GCP e2-micro) | 256MB | 512M | 2 |
+| `Ampere A1` | 1GB (Oracle Cloud Ampere A1) | 256MB | 512M | 2 |
 | `standard` | 4GB+ (Oracle A1, Hetzner CX22+) | 512MB | 1536M | 4 |
 
 **GitHub Actions — secrets/vars per il nuovo server:**

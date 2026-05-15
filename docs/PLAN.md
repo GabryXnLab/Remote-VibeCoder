@@ -4,7 +4,7 @@
 
 Revisione completa del sistema di gestione file e sincronizzazione, articolata in 4 aree:
 1. Sicurezza del pull con rilevamento conflitti
-2. Verifica persistenza dati su GCP
+2. Verifica persistenza dati su Oracle Cloud
 3. Riutilizzo dell'interfaccia di commit guidato esistente
 4. Redesign dei blocchi repository nella pagina principale
 
@@ -18,7 +18,7 @@ Revisione completa del sistema di gestione file e sincronizzazione, articolata i
 - **Server `GET /api/repos/:name/git-status`** → ritorna branch, ahead/behind, tracking, files con status
 - **Nessun endpoint per pre-check pull** (fetch + confronto stato locale vs remoto)
 - **Nessun ConflictWarningDialog** — non esiste alcun dialog di avviso conflitti
-- **Persistenza file**: i file dei progetti risiedono sul disco persistente della VM GCP e2-micro. Le modifiche fatte nel terminale (tramite tmux/node-pty) vengono scritte direttamente sul disco dal processo in esecuzione (es. editor vim, nano, o Claude Code). Il disco della VM è storage GCP persistente — non c'è un layer separato di Google Cloud Storage. Le modifiche sono già persistite istantaneamente dal filesystem Linux.
+- **Persistenza file**: i file dei progetti risiedono sul disco persistente della VM Oracle Cloud Ampere A1. Le modifiche fatte nel terminale (tramite tmux/node-pty) vengono scritte direttamente sul disco dal processo in esecuzione (es. editor vim, nano, o Claude Code). Il disco della VM è storage Oracle Cloud persistente — non c'è un layer separato di Google Cloud Storage. Le modifiche sono già persistite istantaneamente dal filesystem Linux.
 - **Nessun polling dello stato sync** — git-status viene caricato una volta al mount della pagina
 
 ### Cosa manca
@@ -167,9 +167,9 @@ Dettagli visivi:
 
 ## AREA 2 — Persistenza (Nessuna modifica necessaria)
 
-I file dei progetti sono sul disco persistente della VM GCP. Quando si modifica un file tramite il terminale (vim, nano, Claude Code, qualsiasi comando), la modifica viene scritta direttamente sul filesystem ext4 della VM da parte del processo in esecuzione nel tmux. Il disco della VM è storage GCP Persistent Disk — è già persistente per design. Non esiste un layer intermedio che potrebbe perdere dati.
+I file dei progetti sono sul disco persistente della VM Oracle Cloud. Quando si modifica un file tramite il terminale (vim, nano, Claude Code, qualsiasi comando), la modifica viene scritta direttamente sul filesystem ext4 della VM da parte del processo in esecuzione nel tmux. Il disco della VM è storage Oracle Cloud Persistent Disk — è già persistente per design. Non esiste un layer intermedio che potrebbe perdere dati.
 
-L'unico scenario di perdita dati sarebbe un crash della VM durante una scrittura, ma questo è gestito dal journaling del filesystem ext4 e dalla replicazione del Persistent Disk di GCP.
+L'unico scenario di perdita dati sarebbe un crash della VM durante una scrittura, ma questo è gestito dal journaling del filesystem ext4 e dalla replicazione del Persistent Disk di Oracle Cloud.
 
 **Conclusione**: non serve implementare un watcher aggiuntivo. Il sistema attuale garantisce già persistenza istantanea.
 
@@ -178,11 +178,11 @@ L'unico scenario di perdita dati sarebbe un crash della VM durante una scrittura
 ## AREA 3 — Migrazione a Oracle Cloud Infrastructure (OCI)
 
 ### Obiettivo
-Trasferire l'intero ecosistema da GCP e2-micro a un'istanza OCI ARM Ampere per superare i limiti di risorse (1GB RAM) e creare un'architettura "nexus-core" tuttofare.
+Trasferire l'intero ecosistema da Oracle Cloud Ampere A1 a un'istanza OCI ARM Ampere per superare i limiti di risorse (1GB RAM) e creare un'architettura "nexus-core" tuttofare.
 
 ### Stato Attuale
 - **Infrastruttura Target:** VM VM.Standard.A1.Flex (4 OCPU, 24GB RAM, 200GB Disco).
-- **Automazione:** Implementato bot di acquisizione `claim_nexus.sh` su e2-micro che tenta il provisioning ogni 10 minuti tramite OCI CLI/Stack.
+- **Automazione:** Implementato bot di acquisizione `claim_nexus.sh` su Ampere A1 che tenta il provisioning ogni 10 minuti tramite OCI CLI/Stack.
 - **Backup:** Creato pacchetto di migrazione in `/home/gabry/Desktop/Projects/OCI_Migration_Nexus/`.
 
 ### Step di implementazione
@@ -202,7 +202,7 @@ Trasferire l'intero ecosistema da GCP e2-micro a un'istanza OCI ARM Ampere per s
 | Polling sync-status sovraccarica la VM | Rate limiting: max 1 check/repo ogni 60s, chiamate sequenziali con pausa |
 | `git reset --hard` nella force-pull distrugge lavoro | Dialog esplicito con warning rosso e conferma utente obbligatoria |
 | Commit modal aperto da card vs da pull-conflict potrebbe avere stato inconsistente | Singola funzione `openCommitModal(repoName)` che carica sempre fresh git-status |
-| Troppi endpoint simultanei su e2-micro (1GB RAM) | Le chiamate sync-status sono sequenziali, non parallele |
+| Troppi endpoint simultanei su Ampere A1 (1GB RAM) | Le chiamate sync-status sono sequenziali, non parallele |
 
 ---
 
