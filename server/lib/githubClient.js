@@ -41,7 +41,7 @@ async function listGithubRepos() {
   const octokit = getOctokit();
   const data = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
     sort:        'updated',
-    affiliation: 'owner',
+    affiliation: 'owner,collaborator,organization_member',
     per_page:    100,
   });
   _reposCache     = data;
