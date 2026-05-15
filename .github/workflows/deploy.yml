@@ -152,7 +152,7 @@ jobs:
             fi
 
             # Fallback for common nvm paths if above didn't work or if installed differently
-            export PATH="$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo 'default')/bin:$PATH"
+            export PATH="$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo 'default')/bin:$HOME/.npm-global/bin:$PATH"
 
             echo "── Environment Diagnostics ──"
             echo "APP_DIR: ${APP_DIR:-<not set>}"
