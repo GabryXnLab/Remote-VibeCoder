@@ -462,36 +462,9 @@ sudo certbot renew --dry-run --quiet \
   && success "Certbot auto-renewal works correctly" \
   || warn "Certbot dry-run failed — check: sudo certbot renew --dry-run"
 
-# Full config with HTTPS + WebSocket proxy
-sudo bash -c "cat > /etc/nginx/sites-available/remote-vibecoder << NGINXEOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    return 301 https://\\\$host\\\$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \\\$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
-    }
-}
-NGINXEOF"
+# Full config with HTTPS + WebSocket proxy (generated from config/nginx.conf.tmpl)
+sed "s|__DOMAIN__|${DOMAIN}|g" "$SCRIPT_DIR/config/nginx.conf.tmpl" \
+  | sudo tee /etc/nginx/sites-available/remote-vibecoder > /dev/null
 sudo nginx -t && sudo systemctl reload nginx
 success "nginx configured with TLS + WebSocket proxy for ${DOMAIN}"
 
