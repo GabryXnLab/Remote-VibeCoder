@@ -1,12 +1,13 @@
 # Remote VibeCoder
 
-Use Claude Code from your smartphone browser. Runs on a GCP e2-micro VM (free tier), served via Nginx + Certbot or Cloudflare Tunnel.
+Use Claude Code from your smartphone browser. Runs on an Oracle Cloud Infrastructure (OCI) ARM Ampere VM (Always Free tier), served via Nginx + Certbot or Cloudflare Tunnel.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/GabryXn/Remote-VibeCoder.git ~/claude-mobile
-bash ~/claude-mobile/setup.sh
+cd ~/claude-mobile
+bash setup.sh
 ```
 
 Then open `https://your-domain.com` on your phone.
@@ -33,7 +34,8 @@ Claude Code runs inside a named tmux session (`claude-{reponame}`). Closing your
 - **Mobile-optimized** — `100dvh` layout, toolbar above iOS/Android virtual keyboard
 - **GitHub integration** — browse, clone, pull, and **commit/push** your repos from the UI
 - **Automated Maintenance** — cron-based config backups and 5-min health checks
-- **Secure by default** — PBKDF2 password, httpOnly session cookie, Nginx TLS or Cloudflare Tunnel
+- **Powerful All-rounder** — 4 ARM OCPUs and 24GB RAM allow for CI/CD, storage, and web hosting alongside VibeCoder.
+- **Secure by default** — Shielded Instance (OCI), PBKDF2 password, httpOnly session cookie, Nginx TLS or Cloudflare Tunnel
 
 ## Structure
 

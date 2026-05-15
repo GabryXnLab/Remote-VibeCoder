@@ -107,7 +107,34 @@ MaxRetentionSec=7day
 
 ---
 
-## Vulnerabilità rilevate sul sistema
+## 2026-05-10 — Migrazione a Oracle Cloud Infrastructure (OCI)
+
+### Contesto
+Passaggio da GCP e2-micro a OCI ARM Ampere (4 OCPU, 24GB RAM). Il sistema non è più limitato da 1GB di RAM, permettendo un'architettura più robusta e sicura.
+
+### Nuovi Standard di Sicurezza (Nexus-Core)
+
+#### 1. Shielded Instances
+L'istanza è configurata con le protezioni hardware di Oracle:
+- **Secure Boot:** Impedisce il caricamento di bootloader e kernel non firmati.
+- **Measured Boot:** Verifica l'integrità dei componenti di boot tramite TPM.
+- **Trusted Platform Module (TPM):** Memorizzazione sicura delle misurazioni di boot.
+
+#### 2. Network Security Groups (NSG) & VCN
+- **Subnet Pubblica:** Accesso limitato tramite Security Lists di OCI.
+- **Firewall Interno (UFW):** Configurato per permettere solo SSH (porta 22) e le porte strettamente necessarie per il tunnel (Cloudflared).
+
+#### 3. Gestione Risorse
+- **Eliminazione Swap Aggressiva:** Con 24GB di RAM, la swappiness è ridotta a `10` per preservare l'I/O del disco.
+- **Containerizzazione:** Ogni servizio (VibeCoder, CI/CD) girerà in Docker con limiti di risorse definiti per prevenire attacchi DoS locali.
+
+### Vulnerabilità e Rischi (Monitoraggio)
+- **Capacità ARM:** Il rischio principale è la perdita dell'istanza se terminata, a causa della scarsa disponibilità di shape ARM Always Free. Prevenzione: non terminare mai l'istanza, usare snapshot dei volumi.
+- **OCI CLI Access:** La chiave API generata sull'e2-micro deve essere protetta (`chmod 600`) e idealmente rimossa una volta che l'istanza OCI è attiva e stabile.
+
+---
+
+## Vulnerabilità rilevate sul sistema (Legacy GCP)
 
 ### 1. Filesystem che si rimonta in RO senza alerting
 

@@ -35,7 +35,10 @@ async function withGitCredentials(token, cwd, fn, timeoutMs = 30000) {
   );
 
   try {
-    const git = simpleGit(cwd, { timeout: { block: timeoutMs } }).env({
+    const git = simpleGit(cwd, { 
+      timeout: { block: timeoutMs },
+      allowUnsafeAskPass: true 
+    }).env({
       ...process.env,
       GIT_ASKPASS:         helperFile,
       GIT_TERMINAL_PROMPT: '0',

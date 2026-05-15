@@ -175,6 +175,25 @@ L'unico scenario di perdita dati sarebbe un crash della VM durante una scrittura
 
 ---
 
+## AREA 3 — Migrazione a Oracle Cloud Infrastructure (OCI)
+
+### Obiettivo
+Trasferire l'intero ecosistema da GCP e2-micro a un'istanza OCI ARM Ampere per superare i limiti di risorse (1GB RAM) e creare un'architettura "nexus-core" tuttofare.
+
+### Stato Attuale
+- **Infrastruttura Target:** VM VM.Standard.A1.Flex (4 OCPU, 24GB RAM, 200GB Disco).
+- **Automazione:** Implementato bot di acquisizione `claim_nexus.sh` su e2-micro che tenta il provisioning ogni 10 minuti tramite OCI CLI/Stack.
+- **Backup:** Creato pacchetto di migrazione in `/home/gabry/Desktop/Projects/OCI_Migration_Nexus/`.
+
+### Step di implementazione
+1. **Fase 1: Acquisizione** (In corso) — Tentativi automatici di superare l'errore "Out of capacity".
+2. **Fase 2: Setup Base** — Installazione Docker, Traefik (Reverse Proxy), Cloudflared.
+3. **Fase 3: Migrazione VibeCoder** — Containerizzazione dell'app attuale e deploy su OCI.
+4. **Fase 4: Orchestrazione Risorse** — Implementazione del System Governor per gestione priorità container.
+5. **Fase 5: Servizi Aggiuntivi** — Setup CI/CD Runner (GitHub), Storage, Web Hosting.
+
+---
+
 ## Rischi e dipendenze
 
 | Rischio | Mitigazione |

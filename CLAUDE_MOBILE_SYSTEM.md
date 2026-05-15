@@ -1,23 +1,22 @@
-# Mobile Claude Code System — Project Brief
+# Mobile Claude Code System — Project Brief (Evoluzione OCI)
 
 ## Contesto e obiettivo
 
-Costruisci un sistema completo che permetta di usare Claude Code da smartphone, senza mai accendere il computer locale. L'utente deve poter aprire il browser del telefono, scegliere su quale repository GitHub lavorare, e ritrovarsi in una sessione interattiva di Claude Code, esattamente come se stesse usando il terminale in locale.
+Costruisci un sistema completo che permetta di usare Claude Code da smartphone, senza mai accendere il computer locale. L'utente deve poter aprire il browser del telefono, scegliere su quale repository GitHub lavorare, e ritrovarsi in una sessione interattiva di Claude Code.
 
-Il sistema deve girare interamente in cloud, su infrastruttura Google Cloud Platform già disponibile nell'account dell'utente, sfruttando esclusivamente i servizi del **free tier permanente** (no costi, in nessun caso).
+Il sistema è nato su GCP e2-micro ma si è evoluto in un'architettura **"Nexus-Core" su Oracle Cloud Infrastructure (OCI)** per garantire potenza e versatilità.
 
 ---
 
-## Infrastruttura target
+## Infrastruttura Target (Evoluzione)
 
-### Server: GCP e2-micro (Always Free)
+### Server Primario: Oracle Cloud ARM Ampere (Always Free)
 
-- **Tipo macchina:** `e2-micro` (2 vCPU condivise, 1 GB RAM)
-- **OS:** Ubuntu 22.04 LTS
-- **Disco:** 30 GB Standard persistent disk
-- **Regione:** una delle regioni US supportate dal free tier (us-central1, us-east1, us-west1)
-- **IP:** IP esterno statico (gratuito su GCP)
-- **RAM aggiuntiva:** configura 2 GB di swap su disco per compensare il limite di 1 GB di RAM fisica
+- **Tipo macchina:** `VM.Standard.A1.Flex` (4 OCPU ARM, 24 GB RAM)
+- **OS:** Ubuntu 24.04 LTS
+- **Disco:** 200 GB Standard persistent disk
+- **Sicurezza:** Shielded Instance (Secure Boot, TPM)
+- **RAM:** 24 GB fisici (elimina la necessità di swap aggressiva e permette carichi paralleli)
 
 La VM è l'unico componente che deve girare sempre. Tutto il resto (Claude Code, sessioni tmux, repo) vive dentro di essa.
 
@@ -141,7 +140,7 @@ Il `README.md` deve contenere esattamente i passi da eseguire partendo da una VM
 
 ## Vincoli e note implementative
 
-- **Non usare Docker.** Troppo pesante per 1 GB di RAM con swap. Tutto gira direttamente sulla VM.
+- **Uso di Docker consigliato.** Con 24 GB di RAM, Docker è lo standard per garantire isolamento e scalabilità dei servizi (CI/CD, Storage, etc.).
 - **Claude Code si autentica con abbonamento Pro** (OAuth, non API key). Il token viene salvato automaticamente da Claude Code in `~/.claude/`. Il sistema non deve interferire con questo meccanismo.
 - **Non modificare il comportamento di Claude Code.** Il sistema lo avvia normalmente dentro tmux, non lo wrappa o patcha.
 - **GitHub API rate limit:** con un Personal Access Token autenticato il limite è 5000 req/ora — più che sufficiente. Non serve caching aggressivo.

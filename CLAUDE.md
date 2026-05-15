@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Remote VibeCoder** is a lightweight web app that lets you run Claude Code from a smartphone. It runs on a GCP e2-micro VM (1GB RAM + 2GB swap), exposed via Cloudflare Tunnel or nginx+certbot. The app bridges a mobile browser to a persistent tmux session running Claude Code via WebSocket + node-pty.
+**Remote VibeCoder** is a lightweight web app that lets you run Claude Code from a smartphone. It runs on an Oracle Cloud (OCI) ARM Ampere VM (4 OCPUs, 24GB RAM, 200GB Disk), exposed via Cloudflare Tunnel or nginx+certbot. The app bridges a mobile browser to a persistent tmux session running Claude Code via WebSocket + node-pty.
 
 ## Commands
 
@@ -17,6 +17,9 @@ pnpm run dev
 
 # Production
 pnpm start
+
+# OCI Acquisition (during migration)
+./claim_nexus.sh
 
 # Service management
 sudo systemctl status claude-mobile@$USER
@@ -113,33 +116,23 @@ Migration is a rename + barrel creation — no logic changes required.
 - **PAT security:** GitHub token passed only via GIT_ASKPASS temp file (0o600), never stored in `.git/config`
 - **Input validation on commit:** message max 2000 chars, file paths validated against repo root with `realpathSync()`, author fields stripped of control chars
 
-## Resource Optimization (e2-micro)
+## Resource Optimization & All-rounder Architecture
 
-This system is aggressively optimized for a 1GB RAM + 2GB swap GCP e2-micro VM that runs 24/7 with potentially indefinitely-open idle terminals.
+This system is optimized for an Oracle Cloud ARM Ampere VM with 24GB RAM. While it no longer suffers from the 1GB RAM limitation of the e2-micro, it is now designed to be an **intelligent orchestrator** that prioritizes workloads.
 
 ### V8 / Node.js Tuning
-- `--max-old-space-size=256` — V8 heap capped at 256MB (default ~1.7GB would OOM the VM)
-- `--optimize-for-size` — prefer smaller generated code over faster JIT
-- `--expose-gc` — allows resource governor to trigger manual GC under memory pressure
-- `--max-semi-space-size=2` — shrink young generation from 16MB to 2MB
-- `UV_THREADPOOL_SIZE=2` — reduce libuv thread pool (single-user, 2 is enough)
+- `--max-old-space-size=512` — Increased from 256MB to allow more complex AI operations.
+- `--optimize-for-size` — Still used to keep the system lean for other background services.
+- `--expose-gc` — Allows resource governor to trigger manual GC under memory pressure.
 
-### systemd cgroup Limits
-- `MemoryHigh=400M` — soft limit, kernel throttles above this
-- `MemoryMax=512M` — hard limit, OOM kill (controlled restart via `Restart=always`)
-- `TasksMax=200` — prevent fork bombs from runaway PTY spawning
-- `OOMScoreAdjust=-500` — prefer killing other processes first
-- `LimitNOFILE=4096` — cap open file descriptors
+### System Orchestration (The "Governor")
+- **Priority-based killing**: Under extreme load, the system governor (to be expanded) can suspend or kill low-priority containers (CI/CD, dev environments) to protect core VibeCoder sessions.
+- **Docker-first**: All auxiliary services (Gitea, Runners, Web Hosting) run in isolated containers with specific resource caps.
 
-### Resource Governor (`server/resource-governor.js`)
-Lightweight module (<1MB RSS) that:
-- Reads `/proc/meminfo` and `/proc/loadavg` directly (no child processes)
-- Classifies system into 4 pressure levels: low (<60%), moderate (60-80%), high (80-90%), critical (>90%)
-- Adaptive polling: 60s when idle → 10s under critical pressure
-- Triggers `global.gc()` when pressure is high/critical
-- Tracks all PTY connections: max 3 per session, max 15 total
-- Rejects new PTY connections under critical pressure (WS close code 1013)
-- Provides adaptive limits: scrollback lines (50-200), early buffer size (64-256 KB)
+### Kernel Tuning (OCI Optimized)
+- `vm.swappiness=10` — With 24GB RAM, swap usage should be minimal to preserve disk I/O.
+- `vm.vfs_cache_pressure=50` — Keep filesystem caches longer for fast git operations.
+- `vm.min_free_kbytes=65536` — Reserved 64MB for the kernel.
 
 ### Caching & Subprocess Management
 - **Sessions list**: cached 3 seconds — prevents subprocess storms from frontend polling

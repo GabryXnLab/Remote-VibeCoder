@@ -6,7 +6,7 @@ Questo file contiene i mandati fondamentali e le linee guida operative per Gemin
 **Remote VibeCoder** è un'applicazione web leggera per eseguire agenti AI (come Claude Code) o shell remote da browser mobile.
 - **Backend:** Node.js, Express, `node-pty`, `tmux`.
 - **Frontend:** React 18, TypeScript, Vite (migrazione in corso da vanilla HTML/JS).
-- **Infrastruttura:** VM GCP e2-micro (1GB RAM + 2GB swap), Cloudflare Tunnel/Nginx.
+- **Infrastruttura:** VM Oracle Cloud ARM Ampere A1 (4 OCPU, 24GB RAM), Cloudflare Tunnel/Nginx.
 
 ## Mandati Fondamentali
 
@@ -14,6 +14,7 @@ Questo file contiene i mandati fondamentali e le linee guida operative per Gemin
 - **Protezione Credenziali:** Non loggare, stampare o committare mai `githubPat`, hash delle password o secret di sessione. Proteggere rigorosamente `~/.claude-mobile/config.json`.
 - **Prevenzione Path Traversal:** Validare sempre i percorsi dei file utilizzando `realpathSync()` e verificando che si trovino all'interno della root del repository.
 - **Sanitizzazione:** Sanitizzare ogni input utente che viene passato a comandi shell o `tmux`.
+- **Sicurezza Hardware (OCI):** Sfruttare le Shielded Instances di Oracle (Secure Boot, TPM) per garantire l'integrità del sistema.
 
 ### 2. Standard Ingegneristici
 
@@ -26,11 +27,11 @@ Questo file contiene i mandati fondamentali e le linee guida operative per Gemin
 
 #### Backend (Node.js)
 - **Gestione Sessioni:** Ogni sessione tmux deve seguire il pattern `claude-{repo}-{shortId}`.
-- **PTY Bridge:** Gestire con cura il buffering dello scrollback (limite 256 KB) per evitare crash su e2-micro.
+- **PTY Bridge:** Gestire con cura il buffering dello scrollback (limite 256 KB).
 - **Compatibilità:** Mantenere il supporto legacy per le rotte esistenti durante il refactoring.
 
-### 3. Prestazioni su Hardware Limitato
-- Il progetto gira su una istanza **e2-micro** (1GB RAM). Ogni modifica deve essere ottimizzata per il consumo minimo di risorse.
+### 3. Prestazioni e Scalabilità
+- Il progetto è in fase di migrazione su una istanza **ARM da 24GB**. Sebbene le risorse siano maggiori, mantenere l'efficienza per permettere l'esecuzione di carichi di lavoro paralleli (CI/CD, Storage, Web Hosting).
 - Evitare build pesanti se non necessarie; preferire `npm run typecheck` per la validazione veloce.
 
 ## Flusso di Lavoro Operativo
@@ -54,12 +55,17 @@ pnpm start          # Produzione
 # Sistema
 sudo systemctl status claude-mobile@$USER
 sudo journalctl -u claude-mobile@$USER -f
+
+# Automazione OCI (Solo su e2-micro durante migrazione)
+tail -f ~/Documents/Projects/Remote\ VibeCoder/acquisition_bot.log
 ```
 
-## Stato Attuale (Multi-terminal Management)
-Siamo nella fase di implementazione del supporto multi-terminale.
-- **Prossimo Task:** Implementazione del componente `RepoSelector`.
-- **Riferimento:** `docs/superpowers/plans/2026-03-18-multi-terminal.md`.
+## Stato Attuale (Migrazione Oracle Cloud)
+Siamo nella fase di migrazione verso Oracle Cloud Infrastructure (OCI).
+- **Bug Fix:** Risolto l'errore `GIT_ASKPASS` abilitando `allowUnsafeAskPass` in `simple-git`.
+- **Task Corrente:** Acquisizione dell'istanza ARM tramite bot automatico (`claim_nexus.sh`).
+- **Obiettivo:** Creazione di un'architettura "nexus-core" tuttofare (Storage, CI/CD, Hosting).
+- **Riferimento:** `docs/superpowers/plans/2026-05-10-oci-migration.md` (da creare).
 
 ## Istruzioni per Gemini
 - Mantieni sempre aggiornato `CURRENT_CONTEXT.md` con l'avanzamento dei task e i commit effettuati.
