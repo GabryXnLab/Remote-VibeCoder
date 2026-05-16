@@ -26,9 +26,10 @@ type CommitModalProps = Pick<UseCommitReturn,
   | 'commitOpen' | 'commitRepo' | 'commitStatus'
   | 'commitMsg' | 'commitAuthorName' | 'commitAuthorEmail'
   | 'commitPush' | 'selectedFiles' | 'commitBehind'
-  | 'commitLoading' | 'commitError'
+  | 'commitLoading' | 'commitError' | 'aiLoading'
   | 'setCommitMsg' | 'setCommitAuthorName' | 'setCommitAuthorEmail' | 'setCommitPush'
   | 'closeCommitModal' | 'toggleFile' | 'toggleAllFiles' | 'submitCommit'
+  | 'generateAiMessage'
 >
 
 // ─── Component ─────────────────────────────────────────────────────────────
@@ -37,9 +38,10 @@ export function CommitModal({
   commitOpen, commitRepo, commitStatus,
   commitMsg, commitAuthorName, commitAuthorEmail,
   commitPush, selectedFiles, commitBehind,
-  commitLoading, commitError,
+  commitLoading, commitError, aiLoading,
   setCommitMsg, setCommitAuthorName, setCommitAuthorEmail, setCommitPush,
   closeCommitModal, toggleFile, toggleAllFiles, submitCommit,
+  generateAiMessage,
 }: CommitModalProps) {
   return (
     <Modal
@@ -105,14 +107,25 @@ export function CommitModal({
             </div>
           </div>
           <div className={styles.commitSection}>
-            <label className={styles.commitLabel} htmlFor="cm-message">Messaggio di commit *</label>
+            <div className={styles.commitSectionHeader}>
+              <label className={styles.commitLabel} htmlFor="cm-message">Messaggio di commit *</label>
+              <button
+                type="button"
+                className={styles.aiBtnInline}
+                onClick={generateAiMessage}
+                disabled={aiLoading || commitLoading}
+                title="Genera messaggio con Gemini AI"
+              >
+                {aiLoading ? '⏳ Generazione…' : '✨ AI'}
+              </button>
+            </div>
             <Textarea
               id="cm-message"
               value={commitMsg}
               onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setCommitMsg(e.target.value)}
               placeholder="feat: descrivi le modifiche"
               rows={3}
-              maxLength={500}
+              maxLength={2000}
             />
           </div>
           <details className={styles.authorDetails}>

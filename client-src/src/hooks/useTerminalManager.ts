@@ -4,6 +4,7 @@ import {
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
+import { WebglAddon } from 'xterm-addon-webgl'
 import type { ConnectionState } from '@/types/common'
 import {
   RECONNECT_BASE_MS, RECONNECT_MAX_MS, RECONNECT_FACTOR,
@@ -19,9 +20,10 @@ import { setupMobileInputBypass }    from '@/terminal/mobileInputBypass'
 interface UseTerminalManagerOptions {
   isDark: boolean
   displayMode: DisplayMode
+  isMobile: boolean
 }
 
-export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOptions) {
+export function useTerminalManager({ isDark, displayMode, isMobile }: UseTerminalManagerOptions) {
   const termMapRef      = useRef<Map<string, TermInstance>>(new Map())
   const containerMapRef = useRef<Map<string, HTMLDivElement>>(new Map())
 
@@ -32,9 +34,11 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
   const activityTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeSessionIdRef = useRef<string>('')
   const displayModeRef     = useRef<DisplayMode>(displayMode)
+  const isMobileRef        = useRef<boolean>(isMobile)
 
   // Keep refs in sync
   useEffect(() => { displayModeRef.current = displayMode }, [displayMode])
+  useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
 
   const setActiveSessionId = useCallback((id: string) => {
     activeSessionIdRef.current = id
@@ -53,7 +57,7 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
       try {
         inst.term.options.fontSize = displayMode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
         inst.fit.fit()
-        if (displayMode === 'default' && inst.term.cols < MIN_COLS) {
+        if (displayMode === 'default' && isMobileRef.current && inst.term.cols < MIN_COLS) {
           inst.term.resize(MIN_COLS, inst.term.rows)
         }
         const ws = inst.ws
@@ -206,6 +210,13 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     term.loadAddon(new WebLinksAddon())
     term.open(container)
 
+    // ── WebGL renderer (fallback to canvas2d if unavailable) ──
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
+    } catch { /* WebGL unavailable — canvas2d stays active */ }
+
     const inst: TermInstance = {
       term, fit, ws: null, connState: 'connecting',
       reconnTimer: null, reconnDelay: RECONNECT_BASE_MS, intentional: false,
@@ -219,18 +230,22 @@ export function useTerminalManager({ isDark, displayMode }: UseTerminalManagerOp
     setupMobileScrollOverlay(container, term, getWs)
     setupDesktopWheelHandler(container, getWs)
 
-    // ── ResizeObserver ──
+    // ── ResizeObserver (debounced 50ms to avoid flooding tmux during window drag) ──
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
     const ro = new ResizeObserver(() => {
-      try {
-        const mode = displayModeRef.current
-        term.options.fontSize = mode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
-        fit.fit()
-        if (mode === 'default' && term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
-        const ws = inst.ws
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-        }
-      } catch { /* noop */ }
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
+      resizeDebounceTimer = setTimeout(() => {
+        try {
+          const mode = displayModeRef.current
+          term.options.fontSize = mode === 'zoom-out' ? FONT_SIZE_ZOOM_OUT : FONT_SIZE_NORMAL
+          fit.fit()
+          if (mode === 'default' && isMobileRef.current && term.cols < MIN_COLS) term.resize(MIN_COLS, term.rows)
+          const ws = inst.ws
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+          }
+        } catch { /* noop */ }
+      }, 50)
     })
     const wrapper = container.parentElement
     if (wrapper) ro.observe(wrapper)

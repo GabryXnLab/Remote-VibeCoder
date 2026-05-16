@@ -125,6 +125,31 @@
   letter-spacing: 0.07em;
 }
 
+.aiBtnInline {
+  background: none;
+  border: 1px solid var(--accent-orange);
+  border-radius: 4px;
+  color: var(--accent-orange);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 8px;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.aiBtnInline:hover:not(:disabled) {
+  background: var(--accent-orange);
+  color: #fff;
+}
+
+.aiBtnInline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .authorDetails {
   border: 1px solid var(--border-subtle);
   border-radius: 6px;

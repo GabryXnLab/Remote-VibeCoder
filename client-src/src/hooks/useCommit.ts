@@ -1,6 +1,6 @@
 import { useState, type Dispatch, type SetStateAction } from 'react'
 import {
-  getGitStatus, commitRepo as doCommit, pullRepo,
+  getGitStatus, commitRepo as doCommit, pullRepo, generateAiCommitMessage,
   type GitStatus,
 } from '@/services/repoService'
 import { useToast } from '@/hooks/useToast'
@@ -27,6 +27,7 @@ export interface UseCommitReturn {
   commitBehind:      number
   commitLoading:     boolean
   commitError:       string
+  aiLoading:         boolean
   // setters
   setCommitMsg:         (v: string) => void
   setCommitAuthorName:  (v: string) => void
@@ -40,6 +41,7 @@ export interface UseCommitReturn {
   toggleAllFiles:         () => void
   submitCommit:           () => Promise<void>
   setPendingPullRepo:     (repo: string | null) => void
+  generateAiMessage:      () => Promise<void>
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -57,6 +59,7 @@ export function useCommit({ toast, loadAll, setRepos }: UseCommitArgs): UseCommi
   const [commitLoading,     setCommitLoading]     = useState(false)
   const [commitError,       setCommitError]       = useState('')
   const [pendingPullRepo,   setPendingPullRepo]   = useState<string | null>(null)
+  const [aiLoading,         setAiLoading]         = useState(false)
 
   // ── Modal open/close ──────────────────────────────────────────────────────
 
@@ -103,6 +106,22 @@ export function useCommit({ toast, loadAll, setRepos }: UseCommitArgs): UseCommi
 
   function toggleFile(p: string) {
     setSelectedFiles(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
+  }
+
+  // ── AI message generation ─────────────────────────────────────────────────
+
+  async function generateAiMessage() {
+    if (!commitRepo || aiLoading) return
+    setAiLoading(true)
+    setCommitError('')
+    const res = await generateAiCommitMessage(commitRepo)
+    setAiLoading(false)
+    if (!res.ok) {
+      setCommitError(`AI generation failed: ${res.error.message}`)
+      return
+    }
+    const { title, body } = res.data
+    setCommitMsg(body ? `${title}\n\n${body}` : title)
   }
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -164,9 +183,10 @@ export function useCommit({ toast, loadAll, setRepos }: UseCommitArgs): UseCommi
   return {
     commitOpen, commitRepo, commitStatus,
     commitMsg, commitAuthorName, commitAuthorEmail, commitPush,
-    selectedFiles, commitBehind, commitLoading, commitError,
+    selectedFiles, commitBehind, commitLoading, commitError, aiLoading,
     setCommitMsg, setCommitAuthorName, setCommitAuthorEmail, setCommitPush,
     openCommitModal, openCommitModalForRepo, closeCommitModal,
     toggleFile, toggleAllFiles, submitCommit, setPendingPullRepo,
+    generateAiMessage,
   }
 }

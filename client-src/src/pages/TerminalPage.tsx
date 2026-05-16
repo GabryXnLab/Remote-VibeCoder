@@ -64,7 +64,7 @@ export function TerminalPage() {
   const {
     termMapRef, connStates, streamStates, isActivity, sendToWs,
     destroyInstance, renderTerminal, setActiveSessionId: syncActiveId,
-  } = useTerminalManager({ isDark, displayMode })
+  } = useTerminalManager({ isDark, displayMode, isMobile })
 
   const { metrics } = useResourceMonitor()
 

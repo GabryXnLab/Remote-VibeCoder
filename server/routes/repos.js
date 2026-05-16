@@ -10,7 +10,9 @@ const config  = require('../config');
 
 const { getOctokit, getGithubUser, listGithubRepos, invalidateReposCache } = require('../lib/githubClient');
 const { ensureReposDir, getGitStatus, getSyncStatus, cloneRepo, pullRepo,
-        forcePull, commitRepo, stripEmbeddedCredentials, pushRepo }         = require('../lib/gitOps');
+        pullRepoRebase, forcePull, commitRepo, stripEmbeddedCredentials,
+        pushRepo }                                                          = require('../lib/gitOps');
+const { getRepoDiff, generateCommitMessage }                               = require('../lib/aiGenerate');
 const { validateRepoName, validateRepoPath, validateNestedPath,
         validateCommitParams }                                               = require('../lib/repoValidation');
 
@@ -309,6 +311,107 @@ router.post('/:name/push', async (req, res) => {
     console.error('[repos] push error:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── POST /api/repos/sync-all ─────────────────────────────────────────────────
+router.post('/sync-all', async (req, res) => {
+  const cfg          = config.get();
+  const token        = cfg.githubPat || process.env.GITHUB_PAT;
+  const geminiApiKey = cfg.geminiApiKey;
+  const geminiModel  = cfg.geminiModel || 'gemini-2.0-flash-lite';
+
+  ensureReposDir(REPOS_DIR);
+
+  let dirEntries;
+  try {
+    dirEntries = await fsp.readdir(REPOS_DIR, { withFileTypes: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+
+  const clonedDirs = dirEntries.filter(d =>
+    d.isDirectory() && fs.existsSync(path.join(REPOS_DIR, d.name, '.git'))
+  ).map(d => d.name);
+
+  const reports = [];
+
+  for (const name of clonedDirs) {
+    const repoPath  = path.join(REPOS_DIR, name);
+    const pathCheck = validateRepoPath(repoPath, REPOS_DIR);
+    if (!pathCheck.ok) {
+      reports.push({ repo: name, action: 'error', success: false, error: pathCheck.error, commitTitle: '' });
+      continue;
+    }
+
+    const resolved = pathCheck.resolved;
+    const report   = { repo: name, action: 'synced', success: true, error: '', commitTitle: '' };
+
+    try {
+      const status = await getSyncStatus(resolved, token);
+
+      if (status.synced && status.ahead === 0 && status.behind === 0 && !status.localChanges) {
+        report.action = 'synced';
+      } else if (!status.localChanges && status.ahead > 0 && status.behind > 0) {
+        report.action  = 'diverged';
+        report.success = false;
+        report.error   = 'Local and remote diverged — manual intervention required';
+      } else if (!status.localChanges && status.behind > 0) {
+        await pullRepo(resolved, token);
+        report.action = 'pulled';
+      } else if (!status.localChanges && status.ahead > 0) {
+        await stripEmbeddedCredentials(resolved, name);
+        const st = await simpleGit(resolved).status();
+        await pushRepo(resolved, token, st.current);
+        report.action = 'pushed';
+      } else if (status.localChanges) {
+        let title = 'Auto-sync update';
+        let body  = '';
+
+        if (geminiApiKey) {
+          try {
+            const diff = await getRepoDiff(resolved);
+            const msg  = await generateCommitMessage(diff, geminiApiKey, geminiModel);
+            title = msg.title || title;
+            body  = msg.body  || body;
+          } catch (aiErr) {
+            console.warn(`[repos/sync-all] AI generation failed for ${name}:`, aiErr.message);
+            body = `Auto-sync commit. AI generation failed: ${aiErr.message}`;
+          }
+        }
+
+        const files     = status.files.map(f => f.path);
+        const commitMsg = body ? `${title}\n\n${body}` : title;
+
+        await commitRepo(resolved, { message: commitMsg, files, authorEnv: {} });
+        report.commitTitle = title;
+
+        if (status.behind > 0) {
+          try {
+            await pullRepoRebase(resolved, token);
+          } catch (rebaseErr) {
+            report.action  = 'commit+rebase-failed';
+            report.success = false;
+            report.error   = `Committed, but rebase failed: ${rebaseErr.message}`;
+            reports.push(report);
+            continue;
+          }
+        }
+
+        await stripEmbeddedCredentials(resolved, name);
+        const st = await simpleGit(resolved).status();
+        await pushRepo(resolved, token, st.current);
+        report.action = 'committed+pushed';
+      }
+    } catch (err) {
+      report.success = false;
+      report.error   = err.message;
+      if (report.action === 'synced') report.action = 'error';
+    }
+
+    reports.push(report);
+  }
+
+  res.json({ ok: true, reports });
 });
 
 module.exports = router;

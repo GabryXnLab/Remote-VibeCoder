@@ -16,6 +16,7 @@ const configModule   = require('./config');
 const authRoutes     = require('./routes/auth');
 const reposRoutes    = require('./routes/repos');
 const sessionsRoutes = require('./routes/sessions');
+const aiRoutes       = require('./routes/ai');
 const { handlePtyUpgrade } = require('./pty');
 const governor       = require('./resource-governor');
 const { getGpuUsage } = require('./lib/gpuMonitor');
@@ -141,6 +142,7 @@ app.use((req, _res, next) => {
 app.use('/api/auth',     authRoutes);
 app.use('/api/repos',    reposRoutes);
 app.use('/api/sessions', sessionsRoutes);
+app.use('/api/ai',       aiRoutes);
 
 // Public health check — extended with resource governor stats
 app.get('/api/health', async (_req, res) => {

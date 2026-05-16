@@ -236,3 +236,45 @@ export async function deleteRepo(name: string): Promise<ServiceResult<void>> {
   if (!res.ok) return res
   return { ok: true, data: undefined }
 }
+
+// ─── AI types & API ──────────────────────────────────────────────────────────
+
+export interface AiSettings {
+  hasKey:      boolean
+  geminiModel: string
+}
+
+export interface CommitMessageResult {
+  title: string
+  body:  string
+}
+
+export interface SyncReport {
+  repo:        string
+  action:      'synced' | 'pulled' | 'pushed' | 'committed+pushed' | 'diverged' | 'commit+rebase-failed' | 'error'
+  success:     boolean
+  error:       string
+  commitTitle: string
+}
+
+/** Get AI settings (Gemini key presence + model) */
+export async function getAiSettings(): Promise<ServiceResult<AiSettings>> {
+  return apiCall('/api/ai/settings')
+}
+
+/** Save AI settings (geminiApiKey and/or geminiModel) */
+export async function saveAiSettings(settings: { geminiApiKey?: string; geminiModel?: string }): Promise<ServiceResult<void>> {
+  const res = await apiCall<{ ok: boolean }>('/api/ai/settings', json(settings))
+  if (!res.ok) return res
+  return { ok: true, data: undefined }
+}
+
+/** Generate a commit message via Gemini for the given repo's current diff */
+export async function generateAiCommitMessage(repoName: string): Promise<ServiceResult<CommitMessageResult>> {
+  return apiCall('/api/ai/generate-commit', json({ repoName }))
+}
+
+/** Sync all cloned repos: pull / push / commit+push as appropriate */
+export async function syncAllRepos(): Promise<ServiceResult<{ reports: SyncReport[] }>> {
+  return apiCall('/api/repos/sync-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+}

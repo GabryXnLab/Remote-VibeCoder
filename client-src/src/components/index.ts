@@ -46,6 +46,7 @@ export type { SettingsSection, SettingsDropdownProps } from './ui/SettingsDropdo
 export { FileBrowser }      from './FileBrowser/FileBrowser'
 
 export { CommitModal }      from './CommitModal/CommitModal'
+export { SyncAllModal }     from './SyncAllModal/SyncAllModal'
 
 export { RepoSelector }     from './RepoSelector/RepoSelector'
 

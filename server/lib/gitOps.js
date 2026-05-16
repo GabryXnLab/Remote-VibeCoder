@@ -180,12 +180,28 @@ async function pushRepo(repoPath, token, branch) {
   );
 }
 
+/**
+ * Pulls from origin with --rebase on the current branch.
+ * Used after a local commit when the remote is ahead.
+ * @param {string} repoPath  absolute realpath of the repo
+ * @param {string} token     GitHub PAT
+ */
+async function pullRepoRebase(repoPath, token) {
+  const git    = simpleGit(repoPath);
+  const status = await git.status();
+  const branch = status.current || 'main';
+  return withGitCredentials(token, repoPath, credGit =>
+    credGit.pull('origin', branch, { '--rebase': null })
+  );
+}
+
 module.exports = {
   ensureReposDir,
   getGitStatus,
   getSyncStatus,
   cloneRepo,
   pullRepo,
+  pullRepoRebase,
   forcePull,
   commitRepo,
   stripEmbeddedCredentials,

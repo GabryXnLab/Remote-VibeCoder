@@ -1,8 +1,10 @@
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Button, Badge, Spinner, Header, Section,
+  Button, Badge, Spinner, Header, Section, Modal,
   ConflictWarningDialog,
   ToastContainer, ResourceMonitor, ResourceBar,
+  CommitModal, SyncAllModal,
 } from '@/components'
 import { useToast }           from '@/hooks/useToast'
 import { useRepos }           from '@/hooks/useRepos'
@@ -10,7 +12,10 @@ import { useCommit }          from '@/hooks/useCommit'
 import { useResourceMonitor } from '@/hooks/useResourceMonitor'
 import { useMobileLayout }    from '@/hooks/useMobileLayout'
 import { useProjectsActions } from '@/hooks/useProjectsActions'
-import { CommitModal } from '@/components'
+import {
+  syncAllRepos, getAiSettings, saveAiSettings,
+  type SyncReport,
+} from '@/services/repoService'
 import styles from './ProjectsPage.module.css'
 import type { RepoWithSync } from '@/hooks/useRepos'
 
@@ -52,6 +57,54 @@ export function ProjectsPage() {
     handleClone, handlePull, handleForceOverwrite,
     handleCommitFirst, handlePush, handleOpen, handleKillSession,
   } = useProjectsActions({ toast, loadAll, commit, navigate })
+
+  // ── AI Settings ──────────────────────────────────────────────────────────
+  const [aiSettingsOpen,  setAiSettingsOpen]  = useState(false)
+  const [geminiKeyInput,  setGeminiKeyInput]  = useState('')
+  const [geminiModelInput,setGeminiModelInput]= useState('gemini-2.0-flash-lite')
+  const [aiHasKey,        setAiHasKey]        = useState(false)
+  const [aiSettingsSaving,setAiSettingsSaving]= useState(false)
+
+  useEffect(() => {
+    getAiSettings().then(res => {
+      if (res.ok) {
+        setAiHasKey(res.data.hasKey)
+        setGeminiModelInput(res.data.geminiModel)
+      }
+    })
+  }, [])
+
+  async function handleSaveAiSettings() {
+    setAiSettingsSaving(true)
+    const updates: { geminiApiKey?: string; geminiModel?: string } = { geminiModel: geminiModelInput }
+    if (geminiKeyInput.trim()) updates.geminiApiKey = geminiKeyInput.trim()
+    const res = await saveAiSettings(updates)
+    setAiSettingsSaving(false)
+    if (!res.ok) { toast.error('Failed to save AI settings', { detail: res.error.message }); return }
+    setAiHasKey(true)
+    setGeminiKeyInput('')
+    setAiSettingsOpen(false)
+    toast.success('AI settings saved')
+  }
+
+  // ── Sync All ──────────────────────────────────────────────────────────────
+  const [syncAllOpen,    setSyncAllOpen]    = useState(false)
+  const [syncAllLoading, setSyncAllLoading] = useState(false)
+  const [syncAllReports, setSyncAllReports] = useState<SyncReport[]>([])
+
+  async function handleSyncAll() {
+    setSyncAllReports([])
+    setSyncAllOpen(true)
+    setSyncAllLoading(true)
+    const res = await syncAllRepos()
+    setSyncAllLoading(false)
+    if (!res.ok) {
+      toast.error('Sync All failed', { detail: res.error.message })
+      setSyncAllOpen(false)
+      return
+    }
+    setSyncAllReports(res.data.reports)
+  }
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   async function logout() {
@@ -126,6 +179,14 @@ export function ProjectsPage() {
         <div className={styles.logo}>⌘ <span>Remote</span>VibeCoder</div>
         <div className={styles.actions}>
           <Button variant="secondary" size="sm" onClick={loadAll} title="Aggiorna">↺</Button>
+          <Button variant="git" size="sm" onClick={handleSyncAll} title="Sincronizza tutte le repository clonate">⟳ Sync All</Button>
+          <Button
+            variant="secondary" size="sm"
+            onClick={() => setAiSettingsOpen(true)}
+            title={aiHasKey ? 'Gemini AI configurato' : 'Configura Gemini AI key'}
+          >
+            {aiHasKey ? '✨' : '✨?'}
+          </Button>
           {!isMobile && <ResourceMonitor metrics={metrics} />}
           <Button variant="secondary" size="sm" onClick={logout}>Logout</Button>
         </div>
@@ -227,6 +288,7 @@ export function ProjectsPage() {
         commitBehind={commit.commitBehind}
         commitLoading={commit.commitLoading}
         commitError={commit.commitError}
+        aiLoading={commit.aiLoading}
         setCommitMsg={commit.setCommitMsg}
         setCommitAuthorName={commit.setCommitAuthorName}
         setCommitAuthorEmail={commit.setCommitAuthorEmail}
@@ -235,7 +297,65 @@ export function ProjectsPage() {
         toggleFile={commit.toggleFile}
         toggleAllFiles={commit.toggleAllFiles}
         submitCommit={commit.submitCommit}
+        generateAiMessage={commit.generateAiMessage}
       />
+
+      <SyncAllModal
+        open={syncAllOpen}
+        loading={syncAllLoading}
+        reports={syncAllReports}
+        onClose={() => { setSyncAllOpen(false); loadAll() }}
+      />
+
+      <Modal
+        open={aiSettingsOpen}
+        onClose={() => setAiSettingsOpen(false)}
+        title="Gemini AI Settings"
+        subtitle="Used to auto-generate commit messages"
+        size="sm"
+        footer={
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={() => setAiSettingsOpen(false)}>Cancel</button>
+            <button onClick={handleSaveAiSettings} disabled={aiSettingsSaving}>
+              {aiSettingsSaving ? '…' : 'Save'}
+            </button>
+          </div>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+              Gemini API Key {aiHasKey && <span style={{ color: '#4caf50' }}>(configured)</span>}
+            </label>
+            <input
+              type="password"
+              placeholder={aiHasKey ? '••••••••  (leave blank to keep existing)' : 'Enter your Gemini API key…'}
+              value={geminiKeyInput}
+              onChange={e => setGeminiKeyInput(e.target.value)}
+              style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 13, padding: '8px 10px', outline: 'none', width: '100%' }}
+              autoComplete="off"
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+              Model
+            </label>
+            <select
+              value={geminiModelInput}
+              onChange={e => setGeminiModelInput(e.target.value)}
+              style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 13, padding: '8px 10px', outline: 'none', width: '100%' }}
+            >
+              <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (fast, cheap)</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+              <option value="gemini-2.5-flash-preview-05-20">gemini-2.5-flash-preview</option>
+              <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+            </select>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+            The key is stored in <code>~/.claude-mobile/config.json</code> on the server. It is used to generate commit messages from git diffs via the Gemini API.
+          </div>
+        </div>
+      </Modal>
 
       <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
     </div>
