@@ -9,12 +9,13 @@ import { TerminalOpenMenu }  from '@/components/TerminalOpenMenu/TerminalOpenMen
 import { TerminalSidebar }   from '@/components/TerminalSidebar/TerminalSidebar'
 import { TerminalToolbar }   from '@/components/TerminalToolbar/TerminalToolbar'
 import { WindowManager }     from '@/components/WindowManager/WindowManager'
-import { useTheme }          from '@/hooks/useTheme'
-import { useMobileLayout }   from '@/hooks/useMobileLayout'
-import { useSessions }       from '@/hooks/useSessions'
-import { useTerminalManager } from '@/hooks/useTerminalManager'
-import { useVisualViewport }  from '@/hooks/useVisualViewport'
-import { useSpaceHold }       from '@/hooks/useSpaceHold'
+import { useTheme }              from '@/hooks/useTheme'
+import { useMobileLayout }       from '@/hooks/useMobileLayout'
+import { useSessions }           from '@/hooks/useSessions'
+import { useTerminalManager }    from '@/hooks/useTerminalManager'
+import { useVisualViewport }     from '@/hooks/useVisualViewport'
+import { useSpaceHold }          from '@/hooks/useSpaceHold'
+import { useStreamingSettings }  from '@/hooks/useStreamingSettings'
 import { SESSION_POLL_MS, type DisplayMode } from '@/terminal/constants'
 import type { ConnectionState } from '@/types/common'
 import type { SessionMetadata } from '@/types/sessions'
@@ -131,17 +132,7 @@ export function TerminalPage() {
   }, [fetchSessions])
 
   // ── Streaming settings ────────────────────────────────────────────────────
-  const [streamingSettings, setStreamingSettings] = useState<{
-    streamingCpuWarnThreshold: number
-    streamingCpuCriticalThreshold: number
-  } | null>(null)
-
-  useEffect(() => {
-    fetch('/api/settings/streaming')
-      .then(r => r.json())
-      .then(setStreamingSettings)
-      .catch(() => {})
-  }, [])
+  const { streamingSettings, updateSetting } = useStreamingSettings()
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const activeInst = termMapRef.current.get(activeSessionId)
@@ -207,13 +198,7 @@ export function TerminalPage() {
               type="number" min="1" max="99"
               defaultValue={streamingSettings?.streamingCpuWarnThreshold ?? 80}
               className={styles.settingsNumInput}
-              onBlur={async (e) => {
-                await fetch('/api/settings/streaming', {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ streamingCpuWarnThreshold: Number(e.target.value) }),
-                })
-              }}
+              onBlur={(e) => { updateSetting('streamingCpuWarnThreshold', Number(e.target.value)) }}
             />
           </label>
           <label className={styles.settingsSmallLabel}>
@@ -223,13 +208,7 @@ export function TerminalPage() {
               type="number" min="1" max="99"
               defaultValue={streamingSettings?.streamingCpuCriticalThreshold ?? 90}
               className={styles.settingsNumInput}
-              onBlur={async (e) => {
-                await fetch('/api/settings/streaming', {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ streamingCpuCriticalThreshold: Number(e.target.value) }),
-                })
-              }}
+              onBlur={(e) => { updateSetting('streamingCpuCriticalThreshold', Number(e.target.value)) }}
             />
           </label>
         </div>

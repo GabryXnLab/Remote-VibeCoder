@@ -1,18 +1,16 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button, Badge, Spinner, Header, Section,
-  ConflictWarningDialog, type ConflictContext,
-  ToastContainer, ResourceMonitor,
+  ConflictWarningDialog,
+  ToastContainer, ResourceMonitor, ResourceBar,
 } from '@/components'
-import { useToast }    from '@/hooks/useToast'
-import { useRepos }    from '@/hooks/useRepos'
-import { useCommit }   from '@/hooks/useCommit'
+import { useToast }           from '@/hooks/useToast'
+import { useRepos }           from '@/hooks/useRepos'
+import { useCommit }          from '@/hooks/useCommit'
 import { useResourceMonitor } from '@/hooks/useResourceMonitor'
+import { useMobileLayout }    from '@/hooks/useMobileLayout'
+import { useProjectsActions } from '@/hooks/useProjectsActions'
 import { CommitModal } from '@/components'
-import {
-  cloneRepo, pullRepo, forcePullRepo, pushRepo, getSyncStatus,
-} from '@/services/repoService'
 import styles from './ProjectsPage.module.css'
 import type { RepoWithSync } from '@/hooks/useRepos'
 
@@ -41,158 +39,27 @@ const SYNC_DISPLAY: Record<string, { label: string; color: string }> = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ProjectsPage() {
-  const navigate              = useNavigate()
-  const { toasts, toast }     = useToast()
+  const navigate          = useNavigate()
+  const { toasts, toast } = useToast()
   const { repos, sessions, loading, error, loadAll, setRepos } = useRepos()
-  const commit                = useCommit({ toast, loadAll, setRepos })
-  const { metrics }           = useResourceMonitor()
+  const commit            = useCommit({ toast, loadAll, setRepos })
+  const { metrics }       = useResourceMonitor()
+  const isMobile          = useMobileLayout()
 
-  // Conflict dialog state (tightly coupled to pull/overwrite/commitFirst handlers)
-  const [conflictOpen,    setConflictOpen]    = useState(false)
-  const [conflictContext, setConflictContext] = useState<ConflictContext | null>(null)
-  const [conflictLoading, setConflictLoading] = useState(false)
+  const {
+    conflictOpen, conflictContext, conflictLoading,
+    setConflictOpen, setConflictContext,
+    handleClone, handlePull, handleForceOverwrite,
+    handleCommitFirst, handlePush, handleOpen, handleKillSession,
+  } = useProjectsActions({ toast, loadAll, commit, navigate })
 
-  // ── Actions ───────────────────────────────────────────────────────────────
-
+  // ── Auth ──────────────────────────────────────────────────────────────────
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     navigate('/', { replace: true })
   }
 
-  async function handleClone(repo: string, btn: HTMLButtonElement) {
-    const orig = btn.textContent ?? ''
-    btn.disabled = true; btn.textContent = 'Cloning…'
-    const res = await cloneRepo(repo)
-    if (res.ok) {
-      toast.success(`${repo} clonato con successo`)
-      await loadAll()
-    } else {
-      toast.error('Clone fallito', { detail: res.error.message })
-      btn.disabled = false; btn.textContent = orig
-    }
-  }
-
-  async function handlePull(repo: string, btn: HTMLButtonElement) {
-    const orig = btn.textContent ?? ''
-    btn.disabled = true; btn.textContent = '...'
-    try {
-      const checkRes = await getSyncStatus(repo)
-      if (!checkRes.ok) {
-        toast.error('Impossibile verificare lo stato di sync', { detail: checkRes.error.message })
-        btn.disabled = false; btn.textContent = orig
-        return
-      }
-      const ss = checkRes.data
-      if (ss.localChanges || (ss.ahead > 0 && ss.behind > 0)) {
-        setConflictContext({ repoName: repo, branch: ss.branch, ahead: ss.ahead, behind: ss.behind, files: ss.files })
-        setConflictOpen(true)
-        btn.disabled = false; btn.textContent = orig
-        return
-      }
-      const pullRes = await pullRepo(repo)
-      if (!pullRes.ok) {
-        toast.error(`Pull di ${repo} fallito`, { detail: pullRes.error.message })
-        btn.disabled = false; btn.textContent = orig
-        return
-      }
-      const summary = pullRes.data?.summary
-      const detail  = summary && summary.changes > 0
-        ? `${summary.changes} file modificat${summary.changes !== 1 ? 'i' : 'o'}`
-        : 'Già aggiornato'
-      toast.success(`Pull ${repo} completato`, { detail })
-      btn.textContent = '✓'
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
-      await loadAll()
-    } catch {
-      btn.disabled = false; btn.textContent = orig
-    }
-  }
-
-  async function handleForceOverwrite() {
-    if (!conflictContext) return
-    setConflictLoading(true)
-    const res = await forcePullRepo(conflictContext.repoName)
-    setConflictLoading(false)
-    if (!res.ok) { toast.error('Overwrite fallito', { detail: res.error.message }); return }
-    toast.success(`${conflictContext.repoName} sovrascritto`, {
-      detail: 'Tutte le modifiche locali sono state scartate.',
-    })
-    setConflictOpen(false)
-    setConflictContext(null)
-    await loadAll()
-  }
-
-  async function handleCommitFirst() {
-    if (!conflictContext) return
-    const repo   = conflictContext.repoName
-    const behind = conflictContext.behind
-    setConflictOpen(false)
-    commit.setPendingPullRepo(repo)
-    await commit.openCommitModalForRepo(repo, behind)
-  }
-
-  async function handlePush(repo: string, btn: HTMLButtonElement) {
-    const orig = btn.textContent ?? ''
-    btn.disabled = true; btn.textContent = '...'
-    const res = await pushRepo(repo)
-    if (!res.ok) {
-      toast.error(`Push di ${repo} fallito`, {
-        detail:   res.error.message,
-        duration: 0,
-        ...(res.error.kind === 'rejected' ? {
-          action: { label: 'Fai Pull prima', onClick: () => handlePull(repo, btn) }
-        } : {}),
-      })
-      btn.disabled = false; btn.textContent = orig
-      return
-    }
-    const data = res.data as { message?: string; pushed?: number; branch?: string }
-    if (data.message) {
-      toast.info(`${repo}: ${data.message}`)
-    } else {
-      toast.success(`Push ${repo} completato`, {
-        detail: `${data.pushed ?? 0} commit su ${data.branch ?? 'origin'}`,
-      })
-    }
-    btn.textContent = '✓'
-    setTimeout(() => { btn.textContent = orig; btn.disabled = false }, 2000)
-    await loadAll()
-  }
-
-  async function handleOpen(repo: string, btn: HTMLButtonElement, shell = false) {
-    const orig = btn.textContent ?? ''
-    btn.disabled = true; btn.textContent = 'Starting…'
-    try {
-      const res = await fetch('/api/sessions', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ repo, mode: shell ? 'shell' : 'claude' }),
-      })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { error?: string }
-        throw new Error(d.error ?? `Failed to start session (${res.status})`)
-      }
-      const { sessionId } = await res.json() as { sessionId: string }
-      navigate(`/terminal?session=${encodeURIComponent(sessionId)}`)
-    } catch (err) {
-      toast.error('Impossibile avviare la sessione', { detail: err instanceof Error ? err.message : String(err) })
-      btn.disabled = false; btn.textContent = orig
-    }
-  }
-
-  async function handleKillSession(sessionId: string) {
-    if (!confirm(`Kill session ${sessionId}? Claude Code si fermerà.`)) return
-    try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to kill session')
-      toast.success('Sessione terminata')
-      await loadAll()
-    } catch (err) {
-      toast.error('Impossibile terminare la sessione', { detail: err instanceof Error ? err.message : String(err) })
-    }
-  }
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render helpers ────────────────────────────────────────────────────────
 
   const reposWithSession = new Set(sessions.filter(s => s.repo).map(s => s.repo!))
 
@@ -259,10 +126,11 @@ export function ProjectsPage() {
         <div className={styles.logo}>⌘ <span>Remote</span>VibeCoder</div>
         <div className={styles.actions}>
           <Button variant="secondary" size="sm" onClick={loadAll} title="Aggiorna">↺</Button>
-          <ResourceMonitor metrics={metrics} />
+          {!isMobile && <ResourceMonitor metrics={metrics} />}
           <Button variant="secondary" size="sm" onClick={logout}>Logout</Button>
         </div>
       </Header>
+      {isMobile && <ResourceBar metrics={metrics} />}
 
       <main className={styles.content}>
         {loading && <Spinner size="md" label="Caricamento repository…" style={{ padding: '40px' }} />}

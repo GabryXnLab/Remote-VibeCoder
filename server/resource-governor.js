@@ -1,186 +1,50 @@
 'use strict';
 
 /**
- * Resource Governor — lightweight adaptive resource management for Ampere A1.
+ * Resource Governor — adaptive resource management.
  *
- * Monitors system memory/swap usage and exposes pressure levels so other modules
- * can adapt (e.g. reduce scrollback capture, reject new connections, trigger GC).
+ * Monitors system memory/swap via /proc (Linux) and classifies pressure level.
+ * Exposes PTY connection tracking and adaptive limits to pty.js.
+ * Delegates CPU streaming state to streamingGuard, /proc reading to procReader.
  *
- * Design constraints:
- *  - Must consume <1 MB RSS itself
- *  - Polling interval scales with pressure (60s idle → 15s under pressure)
- *  - No child processes — reads /proc directly
- *  - Exposes simple API: pressure(), stats(), onPressure(callback)
+ * Public API: pressure(), stats(), onPressure(), start(), stop(),
+ *             registerPty(), unregisterPty(), canAcceptPty(),
+ *             getScrollbackLines(), getEarlyBufferLimit(),
+ *             onStreamStateChange(), offStreamStateChange(), streamState()
  */
 
-const fs   = require('fs');
-const os   = require('os');
-const v8   = require('v8');
+const v8  = require('v8');
+const { readMeminfo, readLoadAvg, getCpuUsage } = require('./lib/procReader');
+const { createStreamingGuard } = require('./lib/streamingGuard');
 
-// ─── Pressure levels ────────────────────────────────────────────────────────
+// ─── Pressure levels ─────────────────────────────────────────────────────────
 const PRESSURE = {
-  LOW:      'low',      // <60% RAM used — normal operation
-  MODERATE: 'moderate', // 60-80% RAM — reduce non-essential allocations
-  HIGH:     'high',     // 80-90% RAM — aggressive cleanup, limit new connections
-  CRITICAL: 'critical', // >90% RAM — emergency mode, force GC, reject new work
+  LOW:      'low',
+  MODERATE: 'moderate',
+  HIGH:     'high',
+  CRITICAL: 'critical',
 };
 
-// ─── Thresholds (fraction of total RAM) ─────────────────────────────────────
 const THRESHOLD_MODERATE = 0.60;
 const THRESHOLD_HIGH     = 0.80;
 const THRESHOLD_CRITICAL = 0.90;
 
-// ─── Polling intervals per pressure level ───────────────────────────────────
 const POLL_INTERVAL = {
-  [PRESSURE.LOW]:      60_000,  // 60s when idle
-  [PRESSURE.MODERATE]: 30_000,  // 30s
-  [PRESSURE.HIGH]:     15_000,  // 15s
-  [PRESSURE.CRITICAL]: 10_000,  // 10s
+  [PRESSURE.LOW]:      60_000,
+  [PRESSURE.MODERATE]: 30_000,
+  [PRESSURE.HIGH]:     15_000,
+  [PRESSURE.CRITICAL]: 10_000,
 };
 
-// ─── Streaming CPU thresholds (read from config at each poll) ───────────────
-// Defaults; overridden live from configModule.get() if available
-const DEFAULT_CPU_WARN     = 0.80;
-const DEFAULT_CPU_CRITICAL = 0.90;
-
-// ─── Streaming state ─────────────────────────────────────────────────────────
-let _streamState         = 'ok';    // 'ok' | 'warn' | 'critical'
-let _streamCallbacks     = [];
-let _okDebounceTimer     = null;    // 3s debounce before emitting 'ok'
-let _streamRecoveryTimer = null;    // fast CPU re-check when streaming is paused
-const STREAM_RECOVERY_POLL_MS = 5_000; // 5s between recovery checks
-
-// ─── State ──────────────────────────────────────────────────────────────────
-let _pressure   = PRESSURE.LOW;
-let _stats      = null;
-let _cpuUsage   = null;
-let _timer      = null;
-let _callbacks  = [];
+// ─── State ───────────────────────────────────────────────────────────────────
+let _pressure  = PRESSURE.LOW;
+let _stats     = null;
+let _cpuUsage  = null;
+let _timer     = null;
+let _callbacks = [];
 let _activePtys = new Map(); // sessionName → Set<ws>
 
-// ─── /proc readers (Linux only, graceful no-op on other OS) ─────────────────
-
-function readMeminfo() {
-  try {
-    const raw = fs.readFileSync('/proc/meminfo', 'utf8');
-    const map = {};
-    for (const line of raw.split('\n')) {
-      const m = line.match(/^(\w+):\s+(\d+)/);
-      if (m) map[m[1]] = parseInt(m[2], 10) * 1024; // kB → bytes
-    }
-    return {
-      total:     map.MemTotal     || os.totalmem(),
-      free:      map.MemFree      || 0,
-      available: map.MemAvailable || map.MemFree || os.freemem(),
-      buffers:   map.Buffers      || 0,
-      cached:    map.Cached       || 0,
-      swapTotal: map.SwapTotal    || 0,
-      swapFree:  map.SwapFree     || 0,
-    };
-  } catch {
-    // Not on Linux — fall back to os module
-    const total = os.totalmem();
-    const free  = os.freemem();
-    return {
-      total,
-      free,
-      available: free,
-      buffers: 0,
-      cached: 0,
-      swapTotal: 0,
-      swapFree: 0,
-    };
-  }
-}
-
-function readLoadAvg() {
-  try {
-    const raw = fs.readFileSync('/proc/loadavg', 'utf8');
-    const parts = raw.trim().split(/\s+/);
-    return {
-      load1:  parseFloat(parts[0]) || 0,
-      load5:  parseFloat(parts[1]) || 0,
-      load15: parseFloat(parts[2]) || 0,
-    };
-  } catch {
-    const loads = os.loadavg();
-    return { load1: loads[0], load5: loads[1], load15: loads[2] };
-  }
-}
-
-// ─── CPU sampling from /proc/stat ─────────────────────────────────────────
-// Returns { idle, total } counters from the aggregate 'cpu' line.
-function readProcStat() {
-  try {
-    const raw  = fs.readFileSync('/proc/stat', 'utf8');
-    const line = raw.split('\n').find(l => l.startsWith('cpu '));
-    if (!line) return null;
-    const vals = line.trim().split(/\s+/).slice(1).map(Number);
-    // user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice
-    const idle  = vals[3] + (vals[4] || 0); // idle + iowait
-    const total = vals.reduce((s, v) => s + v, 0);
-    return { idle, total };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Measures actual CPU utilisation by diffing /proc/stat twice over 100ms.
- * Returns a value 0.0–1.0, or null on non-Linux hosts.
- */
-function getCpuUsage() {
-  return new Promise((resolve) => {
-    const a = readProcStat();
-    if (!a) return resolve(null);
-    setTimeout(() => {
-      const b = readProcStat();
-      if (!b) return resolve(null);
-      const idleDiff  = b.idle  - a.idle;
-      const totalDiff = b.total - a.total;
-      if (totalDiff === 0) return resolve(0);
-      resolve(Math.max(0, Math.min(1, 1 - idleDiff / totalDiff)));
-    }, 300); // was 100ms — wider window filters sub-200ms transient spikes
-  });
-}
-
-// ─── Streaming state update (shared by poll() and recovery timer) ────────────
-
-/**
- * Re-evaluates streaming state given a fresh CPU reading.
- * Handles debounce and callback emission. Safe to call from any timer.
- */
-function _updateStreamingState(cpu) {
-  const th = getStreamingThresholds();
-  let newStreamState;
-  if (cpu >= th.critical)      newStreamState = 'critical';
-  else if (cpu >= th.warn)     newStreamState = 'warn';
-  else                         newStreamState = 'ok';
-
-  if (newStreamState !== _streamState) {
-    if (newStreamState === 'ok') {
-      if (!_okDebounceTimer) {
-        _okDebounceTimer = setTimeout(() => {
-          _okDebounceTimer = null;
-          _streamState = 'ok';
-          _emitStreamStateChange('ok', _stats);
-        }, 3000);
-        _okDebounceTimer.unref?.();
-      }
-    } else {
-      if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
-      _streamState = newStreamState;
-      _emitStreamStateChange(newStreamState, _stats);
-    }
-  } else if (newStreamState !== 'ok' && _okDebounceTimer) {
-    clearTimeout(_okDebounceTimer);
-    _okDebounceTimer = null;
-  }
-}
-
-// ─── Core polling function ──────────────────────────────────────────────────
-
-// Lazy-load config module to avoid circular dep. Graceful if unavailable.
+// ─── Streaming thresholds (read from config at each poll) ────────────────────
 let _configModule = null;
 function getStreamingThresholds() {
   try {
@@ -191,26 +55,32 @@ function getStreamingThresholds() {
       critical: (cfg.streamingCpuCriticalThreshold ?? 90) / 100,
     };
   } catch {
-    return { warn: DEFAULT_CPU_WARN, critical: DEFAULT_CPU_CRITICAL };
+    return { warn: 0.80, critical: 0.90 };
   }
 }
 
+// ─── Streaming guard ─────────────────────────────────────────────────────────
+const streamingGuard = createStreamingGuard({
+  getThresholds: getStreamingThresholds,
+  onCpuReading: (cpu) => {
+    _cpuUsage = cpu;
+    if (_stats) _stats.cpu = cpu; // keep /api/health current during recovery
+  },
+});
+
+// ─── Core polling ────────────────────────────────────────────────────────────
 async function poll() {
-  // Measure CPU before reading meminfo to overlap the 100ms sample window
   const cpuPromise = getCpuUsage();
   const mem  = readMeminfo();
   const load = readLoadAvg();
   const proc = process.memoryUsage();
   const heap = v8.getHeapStatistics();
 
-  _cpuUsage = await cpuPromise; // null on non-Linux
+  _cpuUsage = await cpuPromise;
 
-  const usedRatio = 1 - (mem.available / mem.total);
-  const swapUsedRatio = mem.swapTotal > 0
-    ? 1 - (mem.swapFree / mem.swapTotal)
-    : 0;
+  const usedRatio     = 1 - (mem.available / mem.total);
+  const swapUsedRatio = mem.swapTotal > 0 ? 1 - (mem.swapFree / mem.swapTotal) : 0;
 
-  // Determine pressure level
   let newPressure;
   if (usedRatio >= THRESHOLD_CRITICAL || swapUsedRatio >= 0.80) {
     newPressure = PRESSURE.CRITICAL;
@@ -241,13 +111,12 @@ async function poll() {
       external:    Math.round(proc.external / 1048576),
     },
     load,
-    cpu: _cpuUsage,   // 0.0-1.0 or null
-    activePtys: _activePtys.size,
-    totalPtyConnections: [..._activePtys.values()].reduce((s, set) => s + set.size, 0),
-    pressure: newPressure,
+    cpu:                  _cpuUsage,
+    activePtys:           _activePtys.size,
+    totalPtyConnections:  [..._activePtys.values()].reduce((s, set) => s + set.size, 0),
+    pressure:             newPressure,
   };
 
-  // Pressure changed — notify listeners and reschedule
   const pressureChanged = newPressure !== _pressure;
   _pressure = newPressure;
 
@@ -260,19 +129,14 @@ async function poll() {
     }
   }
 
-  // Trigger GC under high pressure (if --expose-gc flag is set)
   if (newPressure === PRESSURE.CRITICAL || newPressure === PRESSURE.HIGH) {
-    if (global.gc) {
-      global.gc();
-    }
+    if (global.gc) global.gc();
   }
 
-  // ── Streaming state machine (CPU-based) ──────────────────────────────────
   if (_cpuUsage !== null) {
-    _updateStreamingState(_cpuUsage);
+    streamingGuard.updateState(_cpuUsage, _stats);
   }
 
-  // Reschedule with adaptive interval
   reschedule();
 }
 
@@ -280,46 +144,33 @@ function reschedule() {
   if (_timer) clearTimeout(_timer);
   const interval = POLL_INTERVAL[_pressure] || POLL_INTERVAL[PRESSURE.LOW];
   _timer = setTimeout(() => poll().catch(e => console.error('[resource-governor] poll error:', e.message)), interval);
-  _timer.unref(); // Don't keep process alive
+  _timer.unref();
 }
 
-// ─── PTY tracking ───────────────────────────────────────────────────────────
-
-const MAX_PTYS_PER_SESSION = 3;  // Max concurrent PTY connections per tmux session
-const MAX_TOTAL_PTYS       = 15; // Hard limit on total PTY connections
+// ─── PTY tracking ─────────────────────────────────────────────────────────────
+const MAX_PTYS_PER_SESSION = 3;
+const MAX_TOTAL_PTYS       = 15;
 
 function registerPty(sessionName, ws) {
-  if (!_activePtys.has(sessionName)) {
-    _activePtys.set(sessionName, new Set());
-  }
+  if (!_activePtys.has(sessionName)) _activePtys.set(sessionName, new Set());
   _activePtys.get(sessionName).add(ws);
 }
 
 function unregisterPty(sessionName, ws) {
   const set = _activePtys.get(sessionName);
-  if (set) {
-    set.delete(ws);
-    if (set.size === 0) _activePtys.delete(sessionName);
-  }
+  if (set) { set.delete(ws); if (set.size === 0) _activePtys.delete(sessionName); }
 }
 
 function canAcceptPty(sessionName) {
-  // Check total limit
   const total = [..._activePtys.values()].reduce((s, set) => s + set.size, 0);
   if (total >= MAX_TOTAL_PTYS) return { allowed: false, reason: 'Total PTY limit reached' };
-
-  // Check per-session limit
   const sessionCount = (_activePtys.get(sessionName) || { size: 0 }).size;
   if (sessionCount >= MAX_PTYS_PER_SESSION) return { allowed: false, reason: 'Session PTY limit reached' };
-
-  // Under critical pressure, reject new connections
   if (_pressure === PRESSURE.CRITICAL) return { allowed: false, reason: 'System under critical memory pressure' };
-
   return { allowed: true };
 }
 
-// ─── Adaptive settings based on pressure ────────────────────────────────────
-
+// ─── Adaptive limits ──────────────────────────────────────────────────────────
 function getScrollbackLines() {
   switch (_pressure) {
     case PRESSURE.CRITICAL: return 50;
@@ -331,84 +182,26 @@ function getScrollbackLines() {
 
 function getEarlyBufferLimit() {
   switch (_pressure) {
-    case PRESSURE.CRITICAL: return 64 * 1024;   // 64 KB
-    case PRESSURE.HIGH:     return 128 * 1024;   // 128 KB
-    default:                return 256 * 1024;   // 256 KB
+    case PRESSURE.CRITICAL: return 64  * 1024;
+    case PRESSURE.HIGH:     return 128 * 1024;
+    default:                return 256 * 1024;
   }
 }
 
-// ─── Stream recovery polling ─────────────────────────────────────────────────
-
-/**
- * When streaming is degraded (warn/critical), polls CPU every 5s independently
- * from the memory-pressure timer (which could be 60s away at LOW pressure).
- * Stops itself once streaming returns to 'ok'.
- */
-function _startStreamRecoveryPoll() {
-  if (_streamRecoveryTimer) return; // already running
-  _streamRecoveryTimer = setInterval(async () => {
-    try {
-      const cpu = await getCpuUsage();
-      if (cpu === null) return;
-      _cpuUsage = cpu;
-      if (_stats) _stats.cpu = cpu; // keep /api/health current during recovery
-      _updateStreamingState(cpu);
-    } catch (e) {
-      console.error('[resource-governor] recovery poll error:', e.message);
-    }
-  }, STREAM_RECOVERY_POLL_MS);
-  _streamRecoveryTimer.unref?.();
-}
-
-function _stopStreamRecoveryPoll() {
-  if (_streamRecoveryTimer) {
-    clearInterval(_streamRecoveryTimer);
-    _streamRecoveryTimer = null;
-  }
-}
-
-function _emitStreamStateChange(state, stats) {
-  // Start fast recovery polling whenever streaming is degraded; stop when ok
-  if (state !== 'ok') {
-    _startStreamRecoveryPoll();
-  } else {
-    _stopStreamRecoveryPoll();
-  }
-  for (const cb of _streamCallbacks) {
-    try { cb(state, stats); } catch (e) {
-      console.error('[resource-governor] streamState callback error:', e.message);
-    }
-  }
-}
-
-function onStreamStateChange(cb)  { _streamCallbacks.push(cb); }
-function offStreamStateChange(cb) { _streamCallbacks = _streamCallbacks.filter(x => x !== cb); }
-function streamState()            { return _streamState; }
-
-// ─── Public API ─────────────────────────────────────────────────────────────
-
+// ─── Public API ───────────────────────────────────────────────────────────────
 function start() {
-  poll().catch(e => console.error('[resource-governor] Initial poll error:', e.message)); // Initial poll
+  poll().catch(e => console.error('[resource-governor] Initial poll error:', e.message));
   console.log('[resource-governor] Started — adaptive resource monitoring active');
 }
 
 function stop() {
   if (_timer) { clearTimeout(_timer); _timer = null; }
-  if (_okDebounceTimer) { clearTimeout(_okDebounceTimer); _okDebounceTimer = null; }
-  _stopStreamRecoveryPoll();
+  streamingGuard.stop();
 }
 
-function pressure() {
-  return _pressure;
-}
-
-function stats() {
-  return _stats;
-}
-
-function onPressure(callback) {
-  _callbacks.push(callback);
-}
+function pressure()         { return _pressure; }
+function stats()            { return _stats; }
+function onPressure(cb)     { _callbacks.push(cb); }
 
 module.exports = {
   PRESSURE,
@@ -424,7 +217,7 @@ module.exports = {
   getEarlyBufferLimit,
   MAX_PTYS_PER_SESSION,
   MAX_TOTAL_PTYS,
-  onStreamStateChange,
-  offStreamStateChange,
-  streamState,
+  onStreamStateChange:  streamingGuard.onStreamStateChange,
+  offStreamStateChange: streamingGuard.offStreamStateChange,
+  streamState:          streamingGuard.streamState,
 };
