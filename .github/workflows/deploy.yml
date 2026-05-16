@@ -141,6 +141,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: SERVICE_CHANGED,GH_PAT,APP_DIR,REPO_SLUG
           script_stop: true
+          retry_count: 3
+          retry_wait: 20
           script: |
             set -xeuo pipefail
 
