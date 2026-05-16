@@ -48,7 +48,7 @@ export function ProjectsPage() {
   const { toasts, toast } = useToast()
   const { repos, sessions, loading, error, loadAll, setRepos } = useRepos()
   const commit            = useCommit({ toast, loadAll, setRepos })
-  const { metrics }       = useResourceMonitor()
+  const { metrics, history } = useResourceMonitor()
   const isMobile          = useMobileLayout()
 
   const {
@@ -187,11 +187,11 @@ export function ProjectsPage() {
           >
             {aiHasKey ? '✨' : '✨?'}
           </Button>
-          {!isMobile && <ResourceMonitor metrics={metrics} />}
+          {!isMobile && <ResourceMonitor metrics={metrics} history={history} />}
           <Button variant="secondary" size="sm" onClick={logout}>Logout</Button>
         </div>
       </Header>
-      {isMobile && <ResourceBar metrics={metrics} />}
+      {isMobile && <ResourceBar metrics={metrics} history={history} />}
 
       <main className={styles.content}>
         {loading && <Spinner size="md" label="Caricamento repository…" style={{ padding: '40px' }} />}

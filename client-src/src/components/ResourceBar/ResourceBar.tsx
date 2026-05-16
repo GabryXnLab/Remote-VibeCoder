@@ -1,15 +1,16 @@
 import { ResourceMonitor } from '@/components/ResourceMonitor/ResourceMonitor'
-import type { HealthMetrics } from '@/hooks/useResourceMonitor'
+import type { HealthMetrics, HistorySample } from '@/hooks/useResourceMonitor'
 import styles from './ResourceBar.module.css'
 
 export interface ResourceBarProps {
   metrics: HealthMetrics
+  history?: HistorySample[]
 }
 
-export function ResourceBar({ metrics }: ResourceBarProps) {
+export function ResourceBar({ metrics, history }: ResourceBarProps) {
   return (
     <div className={styles.bar}>
-      <ResourceMonitor metrics={metrics} compact />
+      <ResourceMonitor metrics={metrics} history={history} compact />
     </div>
   )
 }

@@ -66,7 +66,7 @@ export function TerminalPage() {
     destroyInstance, renderTerminal, setActiveSessionId: syncActiveId,
   } = useTerminalManager({ isDark, displayMode, isMobile })
 
-  const { metrics } = useResourceMonitor()
+  const { metrics, history } = useResourceMonitor()
 
   // Keep terminal manager in sync with active session
   useEffect(() => { syncActiveId(activeSessionId) }, [activeSessionId, syncActiveId])
@@ -244,7 +244,7 @@ export function TerminalPage() {
             onSettingsClose={() => setSettingsOpen(false)}
             onToggleSidebar={() => setSidebarOpen(true)}
           />
-          <ResourceBar metrics={metrics} />
+          <ResourceBar metrics={metrics} history={history} />
         </>
       ) : (
         <header className={styles.header}>
@@ -265,7 +265,7 @@ export function TerminalPage() {
             buttonTitle="Impostazioni"
           />
 
-          <ResourceMonitor metrics={metrics} />
+          <ResourceMonitor metrics={metrics} history={history} />
 
           <div className={styles.statusArea}>
             <StatusDot state={connState} activity={isActivity} />

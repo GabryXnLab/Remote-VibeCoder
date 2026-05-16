@@ -1,4 +1,4 @@
-/* ResourceMonitor.module.css */
+/* ── Widget (compact header pill) ────────────────────────────────────────── */
 .widget {
   display: flex;
   align-items: center;
@@ -13,7 +13,7 @@
   transition: border-color 0.3s ease;
 }
 
-.widget.warn   { border-color: #f59e0b; }
+.widget.warn     { border-color: #f59e0b; }
 .widget.critical { border-color: #ef4444; animation: widgetPulse 1.5s ease-in-out infinite; }
 
 @keyframes widgetPulse {
@@ -21,6 +21,7 @@
   50%       { border-color: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.4); }
 }
 
+/* ── Compact metric bars (in the pill) ───────────────────────────────────── */
 .metrics {
   display: flex;
   align-items: center;
@@ -63,9 +64,8 @@
   height: 100%;
   border-radius: 2px;
   background: #22c55e;
-  transition: width 0.5s ease, background-color 0.3s ease;
+  transition: width 0.4s ease, background-color 0.3s ease;
 }
-
 .barFill.warn     { background: #f59e0b; }
 .barFill.critical { background: #ef4444; animation: barPulse 1.5s ease-in-out infinite; }
 
@@ -74,6 +74,7 @@
   50%       { opacity: 0.5; }
 }
 
+/* ── Status badges ────────────────────────────────────────────────────────── */
 .statusBadge {
   display: flex;
   align-items: center;
@@ -84,23 +85,23 @@
   border-radius: 3px;
   white-space: nowrap;
 }
-
 .statusBadge.paused    { background: rgba(245,158,11,0.15); color: #f59e0b; }
 .statusBadge.suspended { background: rgba(239,68,68,0.15);  color: #ef4444; animation: barPulse 1.5s ease-in-out infinite; }
 
-/* Drawer */
+/* ── Drawer container ─────────────────────────────────────────────────────── */
 .drawer {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  min-width: 220px;
+  min-width: 280px;
+  max-width: 360px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 10px;
+  padding: 14px 16px 10px;
   z-index: 100;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  animation: drawerFadeIn 0.15s ease;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  animation: drawerFadeIn 0.14s ease;
 }
 
 @keyframes drawerFadeIn {
@@ -114,8 +115,214 @@
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.section {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.section:last-child { border-bottom: none; }
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sectionLabel {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-secondary);
+  min-width: 30px;
+}
+
+.sectionValue {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  flex: 1;
+}
+.sectionValue.warn     { color: #f59e0b; }
+.sectionValue.critical { color: #ef4444; }
+
+/* ── Per-core grid ────────────────────────────────────────────────────────── */
+.coreGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.coreCell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.coreName {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.coreTrack {
+  width: 100%;
+  height: 28px;
+  background: var(--bg-panel);
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+}
+
+.coreFill {
+  width: 100%;
+  background: #22c55e;
+  border-radius: 2px;
+  transition: height 0.4s ease, background-color 0.3s ease;
+  min-height: 2px;
+}
+.coreFill.warn     { background: #f59e0b; }
+.coreFill.critical { background: #ef4444; }
+
+.coreValue {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* ── Load row ─────────────────────────────────────────────────────────────── */
+.loadRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 11px;
+}
+
+.dimLabel {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+/* ── Segmented memory bar ─────────────────────────────────────────────────── */
+.memBarWrap { margin-top: 4px; }
+
+.memBarTrack {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-panel);
+  gap: 1px;
+}
+
+.memUsed    { background: #ef4444; transition: width 0.5s ease; }
+.memCached  { background: #3b82f6; transition: width 0.5s ease; }
+.memBuffers { background: #8b5cf6; transition: width 0.5s ease; }
+
+.memLegend {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.memLegendUsed,
+.memLegendCached,
+.memLegendBuffers,
+.memLegendFree {
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.memLegendUsed    { color: #ef4444; }
+.memLegendCached  { color: #3b82f6; }
+.memLegendBuffers { color: #8b5cf6; }
+.memLegendFree    { color: var(--text-dim); }
+
+/* ── I/O grid ─────────────────────────────────────────────────────────────── */
+.ioGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin-top: 4px;
+}
+
+.ioBlock {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.ioIcon {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  min-width: 10px;
+}
+
+.ioLabel {
+  font-size: 9px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 40px;
+}
+
+.ioValue {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* ── PSI badges ───────────────────────────────────────────────────────────── */
+.psiRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.psiBadges {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.psiBadge {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.psibadgeok,
+.psiok  { background: rgba(156,163,175,0.12); color: var(--text-secondary); }
+.psiwarn { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.psicritical { background: rgba(239,68,68,0.15); color: #ef4444; }
+
+/* ── System rows ──────────────────────────────────────────────────────────── */
+.sysGrid { display: flex; flex-direction: column; gap: 2px; }
 
 .drawerRow {
   display: flex;
@@ -123,17 +330,18 @@
   align-items: center;
   padding: 3px 0;
   font-size: 12px;
-  border-bottom: 1px solid var(--border-subtle);
 }
 
-.drawerRow:last-child { border-bottom: none; }
-
 .drawerKey   { color: var(--text-secondary); }
-.drawerValue { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.drawerValue {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
 
-.naText { color: var(--text-dim); font-style: italic; }
+.naText { color: var(--text-dim); font-style: italic; font-size: 10px; }
 
-/* ── Compact variant (inside ResourceBar on mobile) ── */
+/* ── Compact variant (inside ResourceBar on mobile) ───────────────────────── */
 .widgetCompact {
   border: none;
   border-radius: 0;
@@ -142,31 +350,13 @@
   width: 100%;
   height: 28px;
 }
+.widgetCompact .metrics   { gap: 16px; }
+.widgetCompact .metricLabel { font-size: 9px; }
+.widgetCompact .barTrack  { width: 32px; height: 3px; }
+.widgetCompact .metricValue { font-size: 10px; min-width: 24px; }
+.widgetCompact .statusBadge { font-size: 9px; padding: 1px 4px; }
 
-.widgetCompact .metrics {
-  gap: 16px;
-}
-
-.widgetCompact .metricLabel {
-  font-size: 9px;
-}
-
-.widgetCompact .barTrack {
-  width: 32px;
-  height: 3px;
-}
-
-.widgetCompact .metricValue {
-  font-size: 10px;
-  min-width: 24px;
-}
-
-.widgetCompact .statusBadge {
-  font-size: 9px;
-  padding: 1px 4px;
-}
-
-/* ── Mobile: drawer becomes a bottom sheet ── */
+/* ── Mobile: drawer → bottom sheet ───────────────────────────────────────── */
 @media (max-width: 768px) {
   .drawer {
     position: fixed;
@@ -175,17 +365,29 @@
     right: 0;
     top: auto;
     min-width: unset;
-    border-radius: 12px 12px 0 0;
+    max-width: unset;
+    max-height: 72vh;
+    overflow-y: auto;
+    border-radius: 14px 14px 0 0;
     border-left: none;
     border-right: none;
     border-bottom: none;
-    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
     animation: sheetUp 0.25s cubic-bezier(0.32, 0.72, 0, 1);
     z-index: 600;
+    padding-bottom: env(safe-area-inset-bottom, 12px);
   }
 
   @keyframes sheetUp {
     from { transform: translateY(100%); opacity: 0; }
     to   { transform: translateY(0);   opacity: 1; }
+  }
+
+  .coreGrid {
+    grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  }
+
+  .ioGrid {
+    grid-template-columns: 1fr 1fr;
   }
 }

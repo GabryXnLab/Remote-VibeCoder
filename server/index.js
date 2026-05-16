@@ -149,14 +149,14 @@ app.get('/api/health', async (_req, res) => {
   const govStats = governor.stats();
   const mem      = process.memoryUsage();
   const gpu      = await getGpuUsage();
+  const sysM     = govStats?.sysMetrics ?? null;
 
-  // New spec-compatible format + legacy fields for backward compat
-  const ramUsed  = govStats ? (govStats.memory.usedPercent / 100) : null;
-  const ramTotal = govStats ? govStats.memory.totalMB  : null;
+  const ramUsed   = govStats ? (govStats.memory.usedPercent / 100) : null;
+  const ramTotal  = govStats ? govStats.memory.totalMB : null;
   const ramUsedMb = govStats ? (ramTotal - govStats.memory.availableMB) : null;
 
   res.json({
-    // Spec fields
+    // Core fields
     status:          govStats ? govStats.pressure.replace('moderate', 'warn').replace('low', 'ok').replace('high', 'warn') : 'ok',
     cpu:             govStats?.cpu   ?? null,
     ram:             ramUsed,
@@ -166,8 +166,17 @@ app.get('/api/health', async (_req, res) => {
     uptime:          Math.floor(process.uptime()),
     streamingPaused: governor.streamState() === 'warn',
     timestamp:       Date.now(),
-    // Legacy fields (kept for other consumers)
-    ok:            true,
+    // Granular system metrics (from systemMetrics 2s ticker)
+    cores:           sysM?.cores        ?? null,  // number[] per-core CPU 0.0-1.0
+    net:             sysM?.net          ?? null,  // { rxBps, txBps }
+    disk:            sysM?.disk         ?? null,  // { readBps, writeBps, ioBusy }
+    psi:             sysM?.psi          ?? null,  // { memory, cpu, io } PSI stall %
+    memBreakdown:    sysM?.memBreakdown ?? null,  // { totalMB, usedMB, cachedMB, buffersMB, availableMB }
+    load:            govStats?.load     ?? null,  // { load1, load5, load15 }
+    swapUsedPercent: govStats?.swap?.usedPercent ?? null,
+    activePtys:      govStats?.totalPtyConnections ?? null,
+    // Legacy fields
+    ok: true,
     memory: {
       rss:       Math.round(mem.rss       / 1024 / 1024),
       heapUsed:  Math.round(mem.heapUsed  / 1024 / 1024),
@@ -191,8 +200,8 @@ app.get('/api/health', async (_req, res) => {
 const STREAMING_SETTINGS_DEFAULTS = {
   streamingCpuWarnThreshold:     80,
   streamingCpuCriticalThreshold: 90,
-  healthPollIntervalMs:          5000,
-  healthPollIntervalFastMs:      2000,
+  healthPollIntervalMs:          2000,
+  healthPollIntervalFastMs:      1000,
   streamingPauseEnabled:         true,
   streamingKillEnabled:          true,
 };

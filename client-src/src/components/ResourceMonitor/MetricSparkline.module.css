@@ -1,0 +1,10 @@
+.sparkline {
+  display: block;
+  flex-shrink: 0;
+}
+
+.placeholder {
+  flex-shrink: 0;
+  opacity: 0.15;
+  border-bottom: 1px dashed var(--border-subtle);
+}

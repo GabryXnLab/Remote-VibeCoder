@@ -16,6 +16,7 @@
 const v8  = require('v8');
 const { readMeminfo, readLoadAvg, getCpuUsage } = require('./lib/procReader');
 const { createStreamingGuard } = require('./lib/streamingGuard');
+const systemMetrics = require('./lib/systemMetrics');
 
 // ─── Pressure levels ─────────────────────────────────────────────────────────
 const PRESSURE = {
@@ -81,6 +82,10 @@ async function poll() {
   const usedRatio     = 1 - (mem.available / mem.total);
   const swapUsedRatio = mem.swapTotal > 0 ? 1 - (mem.swapFree / mem.swapTotal) : 0;
 
+  // Grab latest granular metrics (updated by systemMetrics every 2s)
+  const sysM = systemMetrics.latest();
+
+  // Base pressure from RAM/swap ratios
   let newPressure;
   if (usedRatio >= THRESHOLD_CRITICAL || swapUsedRatio >= 0.80) {
     newPressure = PRESSURE.CRITICAL;
@@ -91,6 +96,12 @@ async function poll() {
   } else {
     newPressure = PRESSURE.LOW;
   }
+
+  // PSI memory stall can elevate pressure even when raw RAM usage looks fine
+  const memPsiStall = sysM?.psi?.memory?.some?.avg10 ?? 0;
+  if (memPsiStall >= 50 && newPressure !== PRESSURE.CRITICAL) newPressure = PRESSURE.CRITICAL;
+  else if (memPsiStall >= 20 && (newPressure === PRESSURE.LOW || newPressure === PRESSURE.MODERATE)) newPressure = PRESSURE.HIGH;
+  else if (memPsiStall >= 5  && newPressure === PRESSURE.LOW) newPressure = PRESSURE.MODERATE;
 
   _stats = {
     timestamp:     Date.now(),
@@ -115,6 +126,7 @@ async function poll() {
     activePtys:           _activePtys.size,
     totalPtyConnections:  [..._activePtys.values()].reduce((s, set) => s + set.size, 0),
     pressure:             newPressure,
+    sysMetrics:           sysM,
   };
 
   const pressureChanged = newPressure !== _pressure;
@@ -190,6 +202,7 @@ function getEarlyBufferLimit() {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 function start() {
+  systemMetrics.start();
   poll().catch(e => console.error('[resource-governor] Initial poll error:', e.message));
   console.log('[resource-governor] Started — adaptive resource monitoring active');
 }
@@ -197,6 +210,7 @@ function start() {
 function stop() {
   if (_timer) { clearTimeout(_timer); _timer = null; }
   streamingGuard.stop();
+  systemMetrics.stop();
 }
 
 function pressure()         { return _pressure; }
