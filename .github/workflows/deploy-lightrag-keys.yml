@@ -1,0 +1,129 @@
+name: Deploy LightRAG API Keys
+
+# Triggered manually or automatically when this workflow file changes.
+# Manages the Google API key pool for LightRAG's automatic quota rotation.
+#
+# GitHub Secrets to configure (Settings → Secrets and variables → Actions):
+#   GOOGLE_API_KEY_1  ← chiave principale (obbligatoria)
+#   GOOGLE_API_KEY_2  ← prima alternativa (opzionale)
+#   GOOGLE_API_KEY_3  ← seconda alternativa (opzionale)
+#   GOOGLE_API_KEY_4  ← terza alternativa (opzionale)
+#   GOOGLE_API_KEY_5  ← quarta alternativa (opzionale)
+#
+# Infrastructure secrets (already set for main deploy):
+#   VM_HOST, VM_USER, SSH_PRIVATE_KEY
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rotation:
+        description: 'Forza la rotazione della chiave attiva anche se quella corrente funziona'
+        required: false
+        default: 'false'
+        type: boolean
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/deploy-lightrag-keys.yml'
+
+jobs:
+  deploy-keys:
+    name: Aggiorna pool chiavi Google API su VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Valida che almeno GOOGLE_API_KEY_1 sia configurata
+        run: |
+          if [ -z "${{ secrets.GOOGLE_API_KEY_1 }}" ]; then
+            echo "::error::GOOGLE_API_KEY_1 non configurata nei GitHub Secrets."
+            echo "::error::Vai su: Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "✓ GOOGLE_API_KEY_1 presente"
+          # Conta quante chiavi aggiuntive sono configurate
+          count=1
+          [ -n "${{ secrets.GOOGLE_API_KEY_2 }}" ] && count=$((count+1)) && echo "✓ GOOGLE_API_KEY_2 presente"
+          [ -n "${{ secrets.GOOGLE_API_KEY_3 }}" ] && count=$((count+1)) && echo "✓ GOOGLE_API_KEY_3 presente"
+          [ -n "${{ secrets.GOOGLE_API_KEY_4 }}" ] && count=$((count+1)) && echo "✓ GOOGLE_API_KEY_4 presente"
+          [ -n "${{ secrets.GOOGLE_API_KEY_5 }}" ] && count=$((count+1)) && echo "✓ GOOGLE_API_KEY_5 presente"
+          echo "Pool totale: $count chiave/i"
+
+      - name: Deploy chiavi e avvia rotazione
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          envs: KEY1,KEY2,KEY3,KEY4,KEY5,FORCE_ROTATION
+          script: |
+            set -euo pipefail
+
+            KEYS_CONF="$HOME/.hermes/lightrag/google-api-keys.conf"
+            mkdir -p "$(dirname "$KEYS_CONF")"
+            mkdir -p "$HOME/.hermes/lightrag/logs"
+
+            echo "── Scrittura pool chiavi Google API ──"
+
+            # Costruisce il file di configurazione solo con le chiavi fornite
+            {
+              echo "# Google API Keys per LightRAG — Key Rotation Pool"
+              echo "# Aggiornato automaticamente dal workflow GitHub il $(date -u '+%Y-%m-%d %H:%M UTC')"
+              echo "# NON modificare manualmente — usa il workflow 'Deploy LightRAG API Keys'"
+              echo "#"
+              echo "# Ordine di priorità: la chiave in cima viene provata per prima."
+              echo "# Il rotatore scala automaticamente in caso di quota esaurita (HTTP 429)."
+              echo "# ─────────────────────────────────────────────────────────────────"
+
+              idx=1
+              for key in ${KEY1} ${KEY2} ${KEY3} ${KEY4} ${KEY5}; do
+                # KEY* sarà "SKIP" se non configurato (vedi env sotto)
+                if [ "$key" != "SKIP" ] && [ -n "$key" ]; then
+                  echo "$key"
+                  echo "Aggiunta chiave $idx" >&2
+                  idx=$((idx+1))
+                fi
+              done
+            } > "$KEYS_CONF"
+
+            # Proteggi il file (contiene secrets)
+            chmod 600 "$KEYS_CONF"
+
+            key_count=$(grep -cv '^\s*#' "$KEYS_CONF" | grep -v '^\s*$' || echo 0)
+            # Ri-conta le chiavi non-commento effettive
+            key_count=$(grep -v '^\s*#' "$KEYS_CONF" | grep -v '^\s*$' | wc -l)
+            echo "Pool scritto: $key_count chiave/i configurate"
+
+            echo ""
+            echo "── Avvio rotatore chiavi ──"
+
+            ROTATOR="$HOME/.hermes/bin/lightrag-key-rotator.sh"
+
+            if [ ! -f "$ROTATOR" ]; then
+              echo "ERRORE: $ROTATOR non trovato. Eseguire prima l'upgrade Hermes."
+              exit 1
+            fi
+
+            # Forza la rotazione se richiesto (azzera la chiave corrente per testare tutto il pool)
+            if [ "${FORCE_ROTATION}" = "true" ]; then
+              echo "Forzando test completo del pool (FORCE_ROTATION=true)..."
+              sed -i 's|^LLM_BINDING_API_KEY=.*|LLM_BINDING_API_KEY=FORCE_RESET|' \
+                "$HOME/.hermes/lightrag/.env"
+            fi
+
+            bash "$ROTATOR"
+
+            echo ""
+            echo "── Stato finale ──"
+            active=$(grep '^LLM_BINDING_API_KEY=' "$HOME/.hermes/lightrag/.env" | cut -d= -f2-)
+            masked="${active:0:8}…${active: -4}"
+            echo "Chiave attiva: $masked"
+            echo "Pool disponibile: $key_count chiave/i"
+            systemctl is-active hermes-lightrag 2>/dev/null && echo "hermes-lightrag: active" || echo "hermes-lightrag: not running"
+        env:
+          KEY1: ${{ secrets.GOOGLE_API_KEY_1 }}
+          KEY2: ${{ secrets.GOOGLE_API_KEY_2 || 'SKIP' }}
+          KEY3: ${{ secrets.GOOGLE_API_KEY_3 || 'SKIP' }}
+          KEY4: ${{ secrets.GOOGLE_API_KEY_4 || 'SKIP' }}
+          KEY5: ${{ secrets.GOOGLE_API_KEY_5 || 'SKIP' }}
+          FORCE_ROTATION: ${{ inputs.force_rotation || 'false' }}
