@@ -11,7 +11,7 @@ const { getOctokit, getGithubUser, listGithubRepos, invalidateReposCache } = req
 const { ensureReposDir, getGitStatus, getSyncStatus, cloneRepo, pullRepo,
         pullRepoRebase, forcePull, commitRepo, stripEmbeddedCredentials,
         pushRepo }                                                          = require('../lib/gitEngineClient');
-const { getRepoDiff, generateCommitMessage }                               = require('../lib/aiGenerate');
+const { getRepoDiff, generateCommitMessageAuto }                           = require('../lib/aiGenerate');
 const { validateRepoName, validateRepoPath, validateNestedPath,
         validateCommitParams }                                               = require('../lib/repoValidation');
 
@@ -364,16 +364,14 @@ router.post('/sync-all', async (req, res) => {
         let title = 'Auto-sync update';
         let body  = '';
 
-        if (geminiApiKey) {
-          try {
-            const diff = await getRepoDiff(resolved);
-            const msg  = await generateCommitMessage(diff, geminiApiKey, geminiModel);
-            title = msg.title || title;
-            body  = msg.body  || body;
-          } catch (aiErr) {
-            console.warn(`[repos/sync-all] AI generation failed for ${name}:`, aiErr.message);
-            body = `Auto-sync commit. AI generation failed: ${aiErr.message}`;
-          }
+        try {
+          const diff = await getRepoDiff(resolved);
+          const msg  = await generateCommitMessageAuto(diff, { geminiApiKey, geminiModel });
+          title = msg.title || title;
+          body  = msg.body  || body;
+        } catch (aiErr) {
+          console.warn(`[repos/sync-all] AI generation failed for ${name}:`, aiErr.message);
+          body = `Auto-sync commit. AI generation failed: ${aiErr.message}`;
         }
 
         const files     = status.files.map(f => f.path);
