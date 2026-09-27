@@ -114,7 +114,7 @@ export function CommitModal({
                 className={styles.aiBtnInline}
                 onClick={generateAiMessage}
                 disabled={aiLoading || commitLoading}
-                title="Genera messaggio con Gemini AI"
+                title="Genera messaggio con AI (locale, fallback Gemini)"
               >
                 {aiLoading ? '⏳ Generazione…' : '✨ AI'}
               </button>
