@@ -35,7 +35,9 @@ cloudflared tunnel status
 cd client-src && pnpm install && pnpm run build
 ```
 
-No automated test suite — testing is manual via browser and systemd logs.
+No automated test suite — testing is manual via browser and systemd logs. Exception: `cd server && pnpm exec vitest run` (unit tests for `lib/aiGenerate.js`).
+
+**AI commit messages** (`server/lib/aiGenerate.js`): local AI first (ai-stack OpenAI-compatible router on the same machine, env `LOCAL_AI_URL` default `http://127.0.0.1:11435/v1`, empty = disabled; `LOCAL_AI_MODEL` default `qwen3.5-4b`; `LOCAL_AI_TIMEOUT_MS` default 60000; `LOCAL_AI_MAX_DIFF_CHARS` default 6000 because the local model has ~4k tokens of context per slot), then Gemini as fallback only if `geminiApiKey`/`GEMINI_API_KEY` is set.
 
 ## ⚠️ Deployment — NEVER rsync or copy files directly to `~/claude-mobile`
 
