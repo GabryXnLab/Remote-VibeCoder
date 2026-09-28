@@ -10,6 +10,7 @@ const http       = require('http');
 const path       = require('path');
 const os         = require('os');
 const fs         = require('fs');
+const crypto     = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const configModule   = require('./config');
@@ -128,13 +129,33 @@ app.use('/api/auth/login', loginLimiter);
 
 // ─── Auth guard ───────────────────────────────────────────────────────────────
 
+// Ascend (app mobile) legge /api/system/* senza sessione: si autentica con la
+// stessa API key di nexus-metrics, letta a ogni richiesta così una rotazione
+// della chiave non richiede un restart.
+const METRICS_KEY_PATH = path.join(os.homedir(), '.nexus-metrics', 'config.json');
+
+function hasMetricsKey(req) {
+  const given = req.headers['x-api-key'];
+  if (typeof given !== 'string' || !given) return false;
+  let expected;
+  try {
+    expected = JSON.parse(fs.readFileSync(METRICS_KEY_PATH, 'utf8')).apiKey;
+  } catch {
+    return false;
+  }
+  if (typeof expected !== 'string' || !expected) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 app.use('/api', (req, res, next) => {
   const pub = req.path === '/auth/login'
     || req.path === '/auth/logout'
-    || req.path === '/health'
-    || req.path === '/system/snapshot'
-    || req.path === '/system/history';
+    || req.path === '/health';
   if (pub) return next();
+  const metricsPath = req.path === '/system/snapshot' || req.path === '/system/history';
+  if (metricsPath && hasMetricsKey(req)) return next();
   if (!req.session.authenticated) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -174,8 +195,12 @@ app.get('/metrics/health',   (_req, res) => _proxyToMetrics(_req, res, '/health'
 app.get('/metrics/snapshot', (req,  res) => _proxyToMetrics(req,  res, '/snapshot'));
 app.get('/metrics/history',  (req,  res) => _proxyToMetrics(req,  res, '/history'));
 
-// Public health check — extended with resource governor stats
-app.get('/api/health', async (_req, res) => {
+// Health check: pubblico solo lo stato; le metriche di dettaglio (processi,
+// rete, socket) solo a sessione autenticata o con API key.
+app.get('/api/health', async (req, res) => {
+  if (!req.session.authenticated && !hasMetricsKey(req)) {
+    return res.json({ ok: true, status: 'ok', timestamp: Date.now() });
+  }
   const govStats = governor.stats();
   const mem      = process.memoryUsage();
   const gpu      = await getGpuUsage();
@@ -248,10 +273,10 @@ app.get('/api/metrics/history', (_req, res) => {
   res.json({ history: systemMetrics.history(), timestamp: Date.now() });
 });
 
-// ─── Public system snapshot (used by Ascend mobile + Remote VibeCoder) ───────
+// ─── System snapshot (used by Ascend mobile + Remote VibeCoder) ──────────────
 //
 // Combines governor stats + systemMetrics latest() into a single
-// structured response. No auth required — same trust level as /api/health.
+// structured response. Sessione autenticata o X-API-Key (auth guard sopra).
 // Response is designed for mobile consumption: flat, typed, no nested legacy fields.
 app.get('/api/system/snapshot', async (_req, res) => {
   const govStats = governor.stats();
@@ -290,7 +315,7 @@ app.get('/api/system/snapshot', async (_req, res) => {
   });
 });
 
-// Public history endpoint (same ring buffer, no auth)
+// History endpoint (same ring buffer; sessione o X-API-Key)
 app.get('/api/system/history', (_req, res) => {
   res.json({ history: systemMetrics.history(), timestamp: Date.now() });
 });
